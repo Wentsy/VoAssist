@@ -143,6 +143,13 @@ final class SynthWorker {
 }
 
 public class BoostAudioUnit: AVSpeechSynthesisProviderAudioUnit {
+    /// Before iOS 27 VoiceOver does not play the very start of what a third-party voice hands it, so at a high boost the
+    /// first word went missing ("按住 说话 按钮" read as "说话 按钮", "编辑框 可按住转文字" without "编辑框", a like count
+    /// before "点赞"), though the audio was all there (iOS 26.5 simulator; Apple's own voices start within 20 ms too, and
+    /// VoiceOver has skipped initial words since iOS 18.4, as users report). There each request starts with this much
+    /// silence, which also lets the request return at once instead of waiting for the slower first audio of those systems.
+    static let leadIn = ProcessInfo.processInfo.operatingSystemVersion.majorVersion < 27 ? SystemVoice.sampleRate * 200 / 1000 : 0
+
     private var outputBus: AUAudioUnitBus
     private var _outputBusses: AUAudioUnitBusArray!
     private let ring = AudioRing()
@@ -274,6 +281,7 @@ public class BoostAudioUnit: AVSpeechSynthesisProviderAudioUnit {
         #endif
         let gen = ring.reset() // also tells a still-running previous utterance to stop
         recordPreviousPlayback()
+        if BoostAudioUnit.leadIn > 0 { ring.append([Float](repeating: 0, count: BoostAudioUnit.leadIn), gen: gen) }
         worker.submit(SynthWorker.Job(ssml: speechRequest.ssmlRepresentation, scheme: scheme(for: speechRequest.voice), gen: gen, ring: ring))
         // Return once the first audio exists: the host starts pulling when this returns, and every block pulled before
         // that would be silence in front of the speech. The synthesizer reports on the main queue, so when the system
@@ -314,7 +322,7 @@ public class BoostAudioUnit: AVSpeechSynthesisProviderAudioUnit {
     /// How the host played the request before (over once the next one comes, or it is cancelled), for the diagnostic log.
     private func recordPreviousPlayback() {
         guard DiagnosticLog.isOn, let p = ring.previousPlayback(), p.gen > 0, p.pulls > 0 || p.samples > 0 else { return }
-        DiagnosticLog.write("playback #\(p.gen): \(p.pulls) pulls of \(p.minFrames)-\(p.maxFrames) frames, first audio out after \(p.startedAfterMs.map { "\($0) ms" } ?? "never"), ran dry \(p.ranDry) times, \(p.samples) samples, \(p.complete ? "complete" : "not complete")")
+        DiagnosticLog.write("playback #\(p.gen): first pull after \(p.firstPullAfterMs.map { "\($0) ms" } ?? "never"), \(p.pulls) pulls of \(p.minFrames)-\(p.maxFrames) frames (\(p.pullsBeforeAudio) before any audio), first audio out after \(p.startedAfterMs.map { "\($0) ms" } ?? "never")\(BoostAudioUnit.leadIn > 0 ? " (\(BoostAudioUnit.leadIn * 1000 / SystemVoice.sampleRate) ms of it silence)" : ""), ran dry \(p.ranDry) times, \(p.samples) samples, \(p.complete ? "complete" : "not complete")")
     }
 }
 

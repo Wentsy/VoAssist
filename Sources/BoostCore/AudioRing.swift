@@ -34,6 +34,9 @@ public final class AudioRing {
         public var gen: Int
         /// Render calls, and the frames they asked for (fewest, most).
         public var pulls = 0
+        /// From the request to the host's first render call, and the calls before the first audio was handed over.
+        public var firstPullAfterMs: Int?
+        public var pullsBeforeAudio = 0
         public var minFrames = 0
         public var maxFrames = 0
         /// From the request to the first audio handed to the host (nil: none was).
@@ -125,6 +128,9 @@ public final class AudioRing {
         cond.lock(); defer { cond.unlock() }
         block = max(count, 1)
         playback.pulls += 1
+        if playback.firstPullAfterMs == nil {
+            playback.firstPullAfterMs = Int((DispatchTime.now().uptimeNanoseconds - resetAt) / 1_000_000)
+        }
         playback.minFrames = playback.pulls == 1 ? count : min(playback.minFrames, count)
         playback.maxFrames = max(playback.maxFrames, count)
         let deadline = Date(timeIntervalSinceNow: timeout)
@@ -132,7 +138,10 @@ public final class AudioRing {
             if !cond.wait(until: deadline) { break }
         }
         if !playing {
-            if !canPlay { return (0, false) }
+            if !canPlay {
+                if !begun { playback.pullsBeforeAudio += 1 }
+                return (0, false)
+            }
             playing = true
             begun = true
             if playback.startedAfterMs == nil {

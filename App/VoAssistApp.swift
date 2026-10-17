@@ -136,6 +136,7 @@ struct ContentView: View {
                 }
             }
             if args.contains("-autotest") { AutoTest.run(model) }
+            if args.contains("-ssmlTest") { SSMLTest.run() }
             if args.contains("-latency") { LatencyProbe.run() }
             // development: the Chinese and English voices the app sees (the voice extension sees fewer)
             if args.contains("-listVoices") {
@@ -224,6 +225,43 @@ struct ContentView: View {
 /// A development run is over: on a Mac (the iPhone app there) the app quits, as nothing else ends it from the command line.
 func devRunEnded() {
     if ProcessInfo.processInfo.isiOSAppOnMac { exit(0) }
+}
+
+/// `-ssmlTest` launch argument (development): VoiceOver-style requests, whole and with a part left out, through our
+/// pipeline and straight to the system voice; the audio lengths show whether a part was read at all on this system.
+enum SSMLTest {
+    static func run() {
+        Thread {
+            func req(_ parts: [String]) -> String {
+                "<speak><prosody rate=\"99.99998%\" volume=\"-1.9382001dB\">"
+                    + parts.map { "<s><lang xml:lang=\"cmn-CN\">\($0)</lang></s>" }.joined() + "</prosody></speak>"
+            }
+            let cases: [(String, [String])] = [
+                ("按住 说话|按钮", ["按住 说话", "按钮"]), ("说话|按钮", ["说话", "按钮"]), ("按住说话|按钮", ["按住说话", "按钮"]),
+                ("已选定|微信|标签", ["已选定", "微信", "标签"]), ("已选定|标签", ["已选定", "标签"]),
+                ("编辑框|可按住转文字", ["编辑框", "可按住转文字"]), ("可按住转文字", ["可按住转文字"]),
+                ("1.2万|点赞", ["1.2万", "点赞"]), ("点赞", ["点赞"]),
+            ]
+            let voice = SystemVoice()
+            let scheme = VoiceScheme.defaultTingting
+            guard let tingting = voice.resolve(scheme.main) else { print("SSMLTEST no voice"); return }
+            voice.warmUp(scheme.main)
+            for (name, parts) in cases {
+                let ssml = req(parts)
+                var ours = 0
+                _ = BoostSynthesis.run(ssml: ssml, scheme: scheme, settings: BoostSettings(), rules: RuleBook([]), voice: voice,
+                                       isCancelled: { false }) { ours += $0.count }
+                var apple: [Float] = []
+                _ = voice.speak(ssml: ssml, voice: tingting, stretches: 1, isCancelled: { false }) { pcm, _ in apple += pcm }
+                let lead = apple.firstIndex { abs($0) > 0.01 } ?? apple.count
+                func ms(_ n: Int) -> Double { Double(n) / Double(SystemVoice.sampleRate) * 1000 }
+                print(String(format: "SSMLTEST %@: ours %.0f ms, system voice alone %.0f ms (leading silence %.0f ms)", name,
+                             ms(ours), ms(apple.count), ms(lead)))
+            }
+            print("SSMLTEST done")
+            DispatchQueue.main.async { devRunEnded() }
+        }.start()
+    }
 }
 
 /// `-autotest` launch argument (simulator / development): scheme preview and the extension check, results on stdout.
