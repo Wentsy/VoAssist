@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>$(DEVELOPMENT_LANGUAGE)</string>
+	<key>CFBundleDisplayName</key>
+	<string>旁白助手语音</string>
+	<key>CFBundleExecutable</key>
+	<string>$(EXECUTABLE_NAME)</string>
+	<key>CFBundleIdentifier</key>
+	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>$(PRODUCT_NAME)</string>
+	<key>CFBundlePackageType</key>
+	<string>XPC!</string>
+	<key>CFBundleShortVersionString</key>
+	<string>$(MARKETING_VERSION)</string>
+	<key>CFBundleVersion</key>
+	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>NSExtension</key>
+	<dict>
+		<key>NSExtensionAttributes</key>
+		<dict>
+			<key>AudioComponents</key>
+			<array>
+				<dict>
+					<key>description</key>
+					<string>旁白助手 Speech Synthesizer</string>
+					<key>manufacturer</key>
+					<string>Zdyi</string>
+					<key>name</key>
+					<string>旁白助手: 旁白助手</string>
+					<key>sandboxSafe</key>
+					<true/>
+					<key>subtype</key>
+					<string>VoAs</string>
+					<key>tags</key>
+					<array>
+						<string>Speech Synthesizer</string>
+					</array>
+					<key>type</key>
+					<string>ausp</string>
+					<key>version</key>
+					<integer>1</integer>
+				</dict>
+			</array>
+		</dict>
+		<key>NSExtensionPointIdentifier</key>
+		<string>com.apple.AudioUnit</string>
+		<key>NSExtensionPrincipalClass</key>
+		<string>$(PRODUCT_MODULE_NAME).BoostAudioUnitFactory</string>
+	</dict>
+</dict>
+</plist>

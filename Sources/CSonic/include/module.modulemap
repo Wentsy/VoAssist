@@ -1,0 +1,4 @@
+module CSonic {
+    header "sonic.h"
+    export *
+}
