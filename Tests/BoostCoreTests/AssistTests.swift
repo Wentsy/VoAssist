@@ -359,3 +359,75 @@ final class SharedFileTests: XCTestCase {
         XCTAssertEqual(RuleBook.shared().apply("甲"), "乙")
     }
 }
+
+final class DiagnosticLogTests: XCTestCase {
+    private var dir: URL!
+    private var savedDirectory: URL!
+
+    override func setUpWithError() throws {
+        dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        SharedStore.testContainer = dir
+        savedDirectory = DiagnosticLog.directory
+        DiagnosticLog.directory = dir.appendingPathComponent("Diagnostics")
+    }
+
+    override func tearDown() {
+        SharedStore.testContainer = nil
+        DiagnosticLog.directory = savedDirectory
+        try? FileManager.default.removeItem(at: dir)
+    }
+
+    private func setLog(until: Date?, speech: Bool = false) {
+        var s = BoostSettings()
+        s.logUntil = until
+        s.logSpeech = speech
+        XCTAssertTrue(BoostSettings.save(s))
+        // a new modification date for the settings cache, even within the file system's time resolution
+        try? FileManager.default.setAttributes([.modificationDate: Date().addingTimeInterval(Double.random(in: 1...1000))],
+                                               ofItemAtPath: dir.appendingPathComponent("settings.json").path)
+    }
+
+    func testOnlyWhileSwitchedOnAndForAnHourAtMost() {
+        DiagnosticLog.write("before")
+        XCTAssertEqual(DiagnosticLog.contents(), "", "off by default")
+        setLog(until: Date().addingTimeInterval(DiagnosticLog.duration))
+        XCTAssertTrue(DiagnosticLog.isOn)
+        DiagnosticLog.write("one")
+        DiagnosticLog.write("two")
+        let lines = DiagnosticLog.contents().split(separator: "\n")
+        XCTAssertTrue(lines.last?.hasSuffix("] two") == true)
+        XCTAssertTrue(lines.dropLast().last?.hasSuffix("] one") == true)
+        setLog(until: Date().addingTimeInterval(-1))
+        XCTAssertFalse(DiagnosticLog.isOn, "expired")
+        DiagnosticLog.write("three")
+        XCTAssertFalse(DiagnosticLog.contents().contains("three"))
+        DiagnosticLog.clear()
+        XCTAssertEqual(DiagnosticLog.contents(), "")
+    }
+
+    func testSpeechOnlyWhenAskedFor() {
+        setLog(until: Date().addingTimeInterval(60))
+        XCTAssertEqual(DiagnosticLog.speech("打开 Safari"), "9 chars")
+        setLog(until: Date().addingTimeInterval(60), speech: true)
+        XCTAssertEqual(DiagnosticLog.speech("打开 Safari"), "\"打开 Safari\"")
+        XCTAssertEqual(DiagnosticLog.speech(String(repeating: "长", count: 300)).count, DiagnosticLog.maxSpeech + 3)
+    }
+
+    func testKeepsTwoFilesUnderTheLimit() {
+        setLog(until: Date().addingTimeInterval(60))
+        let line = String(repeating: "x", count: 10_000)
+        for i in 0..<250 { DiagnosticLog.write("\(i) \(line)") }
+        let all = DiagnosticLog.contents()
+        XCTAssertLessThan(all.utf8.count, 2 * DiagnosticLog.maxBytes + 20_000)
+        XCTAssertFalse(all.contains("] 0 x"), "the oldest are gone")
+        XCTAssertTrue(all.contains("] 249 x"))
+    }
+
+    func testSettingsWithoutTheLogFields() throws {
+        let s = try JSONDecoder().decode(BoostSettings.self, from: Data("{}".utf8))
+        XCTAssertNil(s.logUntil)
+        XCTAssertFalse(s.logSpeech)
+        XCTAssertFalse(s.isLogging())
+    }
+}

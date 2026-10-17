@@ -4,6 +4,22 @@ import os
 
 private let log = Logger(subsystem: "com.zdyi.voassist", category: "voice")
 
+/// Each call the system makes into the extension, its thread and how long it took: into the diagnostic log while the
+/// user records one (and, in a development build, the device log as `VOASSIST-CALL`), to see what the host waits for
+/// (around locking and waking the phone, say).
+private func traced<T>(_ what: String, _ body: () throws -> T) rethrows -> T {
+    let t0 = Date()
+    defer {
+        let ms = Int(Date().timeIntervalSince(t0) * 1000)
+        let thread = Thread.isMainThread ? "main" : "bg"
+        #if DEBUG
+        log.notice("VOASSIST-CALL \(what, privacy: .public) on \(thread, privacy: .public): \(ms) ms")
+        #endif
+        DiagnosticLog.write("call \(what) on \(thread): \(ms) ms")
+    }
+    return try body()
+}
+
 /// One persistent synthesis thread. `AVSpeechSynthesizer.write` reports on the main queue, so the waiting happens here,
 /// never on the main thread. Only the newest request matters.
 final class SynthWorker {
@@ -12,6 +28,7 @@ final class SynthWorker {
         let scheme: VoiceScheme
         let gen: Int
         let ring: AudioRing
+        var submitted = Date()
     }
 
     private let cond = NSCondition()
@@ -82,19 +99,33 @@ final class SynthWorker {
         #if LATENCY_PROBE
         LatencyTrace.mark("settings")
         #endif
+        var firstAudio: Date?
         let status = BoostSynthesis.run(ssml: job.ssml, scheme: job.scheme, settings: settings, rules: RuleBook.shared(),
                                         voice: voice, isCancelled: { ring.generation != gen },
                                         switching: { ring.setSwitching($0, gen: gen) }) { pcm in
             #if LATENCY_PROBE
             if !pcm.isEmpty { LatencyTrace.mark("first output") }
             #endif
+            if firstAudio == nil && !pcm.isEmpty { firstAudio = Date() }
             ring.append(pcm, gen: gen)
         }
         if status != .ok && status != .cancelled {
             log.error("request failed: \(String(describing: status), privacy: .public) voice \(job.scheme.main.id, privacy: .public)")
         }
         log.debug("request done in \(Int(Date().timeIntervalSince(t0) * 1000)) ms: \(String(describing: status), privacy: .public), end: \(self.voice.lastEnd, privacy: .public), voice switches took \(self.voice.lastSwitchWaitsMs.map(String.init).joined(separator: "/"), privacy: .public) ms")
+        if DiagnosticLog.isOn { record(job, status: status, started: t0, firstAudio: firstAudio) }
         ring.finish(gen: gen)
+    }
+
+    /// One request in the diagnostic log: the scheme and the voices it really got, VoiceOver's rate, what was read (or
+    /// only its length), and how long each step took.
+    private func record(_ job: Job, status: BoostSynthesis.Status, started t0: Date, firstAudio: Date?) {
+        func ms(_ a: Date, _ b: Date) -> Int { Int(b.timeIntervalSince(a) * 1000) }
+        func voices(_ e: VoiceEntry?) -> String { e.map { "\($0.id) -> \(voice.resolve($0)?.identifier ?? "none")" } ?? "none" }
+        let s = job.scheme
+        let request = SSML.parse(job.ssml)
+        DiagnosticLog.write("request #\(job.gen) \"\(s.name)\": main \(voices(s.main)), secondary \(voices(s.secondary)); VoiceOver rate \(Int((request.rate * 100).rounded()))%, boost \(s.boost), numbers \(s.numbers.rawValue), rules \(s.useRules ? "on" : "off"); \(DiagnosticLog.speech(request.segments.map(\.text).joined(separator: " ")))")
+        DiagnosticLog.write("request #\(job.gen) \(status): waited \(ms(job.submitted, t0)) ms to start, first audio after \(firstAudio.map { "\(ms(t0, $0)) ms" } ?? "none"), done in \(ms(t0, Date())) ms, end \(voice.lastEnd), voice switches \(voice.lastSwitchWaitsMs.map(String.init).joined(separator: "/")) ms")
     }
 }
 
@@ -103,6 +134,8 @@ public class BoostAudioUnit: AVSpeechSynthesisProviderAudioUnit {
     private var _outputBusses: AUAudioUnitBusArray!
     private let ring = AudioRing()
     private let worker = SynthWorker()
+    /// Set by the app's `sendLog` command: the next read of the state carries the diagnostic log.
+    private var sendLog = false
 
     @objc override init(componentDescription: AudioComponentDescription, options: AudioComponentInstantiationOptions = []) throws {
         let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: Double(SystemVoice.sampleRate), channels: 1, interleaved: false)!
@@ -112,10 +145,11 @@ public class BoostAudioUnit: AVSpeechSynthesisProviderAudioUnit {
         // maximumFramesToRender is left to the host (a limit of its own can make render calls fail while music plays).
         // The synthesizer is not touched here: the system also creates this unit just to list voices.
         worker.start()
+        traced("init") {}
     }
 
     deinit {
-        worker.stop()
+        traced("deinit") { worker.stop() }
     }
 
     public override var outputBusses: AUAudioUnitBusArray { _outputBusses }
@@ -127,9 +161,11 @@ public class BoostAudioUnit: AVSpeechSynthesisProviderAudioUnit {
     /// English one (it reads English through its secondary voice all the same).
     public override var speechVoices: [AVSpeechSynthesisProviderVoice] {
         get {
-            schemes.map {
-                AVSpeechSynthesisProviderVoice(name: $0.name, identifier: $0.providerIdentifier,
-                                               primaryLanguages: [$0.language], supportedLanguages: [$0.language])
+            traced("speechVoices") {
+                schemes.map {
+                    AVSpeechSynthesisProviderVoice(name: $0.name, identifier: $0.providerIdentifier,
+                                                   primaryLanguages: [$0.language], supportedLanguages: [$0.language])
+                }
             }
         }
         set {}
@@ -139,16 +175,39 @@ public class BoostAudioUnit: AVSpeechSynthesisProviderAudioUnit {
     /// thing it can hand over.
     public override var fullState: [String: Any]? {
         get {
-            var s = super.fullState ?? [:]
-            s[UsableVoices.stateKey] = AVSpeechSynthesisVoice.speechVoices()
-                .filter { VoiceEntry.isWrappable($0.identifier) }
-                .map { ["id": $0.identifier, "name": $0.name, "lang": $0.language] }
-            return s
+            traced("fullState get") {
+                var s = super.fullState ?? [:]
+                s[UsableVoices.stateKey] = AVSpeechSynthesisVoice.speechVoices()
+                    .filter { VoiceEntry.isWrappable($0.identifier) }
+                    .map { ["id": $0.identifier, "name": $0.name, "lang": $0.language] }
+                if sendLog {
+                    sendLog = false
+                    s[DiagnosticLog.logKey] = DiagnosticLog.contents()
+                }
+                return s
+            }
         }
-        set { super.fullState = newValue }
+        set {
+            traced("fullState set") {
+                // the app's commands about the diagnostic log (see `DiagnosticLog`)
+                switch newValue?[DiagnosticLog.commandKey] as? String {
+                case "sendLog": sendLog = true
+                case "clearLog": DiagnosticLog.clear()
+                default: super.fullState = newValue
+                }
+            }
+        }
     }
 
     public override func allocateRenderResources() throws {
+        try traced("allocateRenderResources") { try allocate() }
+    }
+
+    public override func deallocateRenderResources() {
+        traced("deallocateRenderResources") { super.deallocateRenderResources() }
+    }
+
+    private func allocate() throws {
         try super.allocateRenderResources()
         #if DEBUG
         // which system voices this process can see (the app may see more)
@@ -193,10 +252,15 @@ public class BoostAudioUnit: AVSpeechSynthesisProviderAudioUnit {
     }
 
     public override func synthesizeSpeechRequest(_ speechRequest: AVSpeechSynthesisProviderRequest) {
+        traced("synthesizeSpeechRequest") { synthesize(speechRequest) }
+    }
+
+    private func synthesize(_ speechRequest: AVSpeechSynthesisProviderRequest) {
         #if LATENCY_PROBE
         LatencyTrace.begin(Thread.isMainThread ? "request(main)" : "request(bg)")
         #endif
         let gen = ring.reset() // also tells a still-running previous utterance to stop
+        recordPreviousPlayback()
         worker.submit(SynthWorker.Job(ssml: speechRequest.ssmlRepresentation, scheme: scheme(for: speechRequest.voice), gen: gen, ring: ring))
         // Return once the first audio exists: the host starts pulling when this returns, and every block pulled before
         // that would be silence in front of the speech. The synthesizer reports on the main queue, so when the system
@@ -228,7 +292,16 @@ public class BoostAudioUnit: AVSpeechSynthesisProviderAudioUnit {
     }
 
     public override func cancelSpeechRequest() {
-        ring.reset()
+        traced("cancelSpeechRequest") {
+            ring.reset()
+            recordPreviousPlayback()
+        }
+    }
+
+    /// How the host played the request before (over once the next one comes, or it is cancelled), for the diagnostic log.
+    private func recordPreviousPlayback() {
+        guard DiagnosticLog.isOn, let p = ring.previousPlayback(), p.gen > 0, p.pulls > 0 || p.samples > 0 else { return }
+        DiagnosticLog.write("playback #\(p.gen): \(p.pulls) pulls of \(p.minFrames)-\(p.maxFrames) frames, first audio out after \(p.startedAfterMs.map { "\($0) ms" } ?? "never"), ran dry \(p.ranDry) times, \(p.samples) samples, \(p.complete ? "complete" : "not complete")")
     }
 }
 

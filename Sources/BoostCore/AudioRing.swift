@@ -26,8 +26,33 @@ public final class AudioRing {
     private var begun = false // the host has started playing this request (or has been told it is complete)
     private var switching = false
     private var block = AudioRing.defaultBlock // the frames the host pulls at a time, as last seen
+    private var playback = Playback(gen: 0)
+    private var resetAt = DispatchTime.now().uptimeNanoseconds
+
+    /// How the host played one request, for the diagnostic log.
+    public struct Playback: Equatable {
+        public var gen: Int
+        /// Render calls, and the frames they asked for (fewest, most).
+        public var pulls = 0
+        public var minFrames = 0
+        public var maxFrames = 0
+        /// From the request to the first audio handed to the host (nil: none was).
+        public var startedAfterMs: Int?
+        /// Times playback ran dry in the middle.
+        public var ranDry = 0
+        public var samples = 0
+        /// The host was told the request is complete.
+        public var complete = false
+    }
 
     public init() {}
+
+    /// The request before the current one, as the host played it.
+    public func previousPlayback() -> Playback? {
+        cond.lock(); defer { cond.unlock() }
+        return lastPlayback
+    }
+    private var lastPlayback: Playback?
 
     /// Enough in hand to start or go on (under the lock).
     private var canPlay: Bool {
@@ -44,6 +69,9 @@ public final class AudioRing {
     public func reset() -> Int {
         cond.lock(); defer { cond.unlock() }
         gen += 1
+        lastPlayback = playback
+        playback = Playback(gen: gen)
+        resetAt = DispatchTime.now().uptimeNanoseconds
         samples.removeAll(keepingCapacity: true)
         head = 0
         done = false
@@ -60,6 +88,7 @@ public final class AudioRing {
         cond.lock(); defer { cond.unlock() }
         guard g == gen else { return }
         samples.append(contentsOf: pcm)
+        playback.samples += pcm.count
         cond.broadcast()
     }
 
@@ -95,6 +124,9 @@ public final class AudioRing {
     public func read(into dst: UnsafeMutablePointer<Float>, count: Int, timeout: TimeInterval) -> (Int, Bool) {
         cond.lock(); defer { cond.unlock() }
         block = max(count, 1)
+        playback.pulls += 1
+        playback.minFrames = playback.pulls == 1 ? count : min(playback.minFrames, count)
+        playback.maxFrames = max(playback.maxFrames, count)
         let deadline = Date(timeIntervalSinceNow: timeout)
         while samples.count - head < count && !done {
             if !cond.wait(until: deadline) { break }
@@ -103,6 +135,9 @@ public final class AudioRing {
             if !canPlay { return (0, false) }
             playing = true
             begun = true
+            if playback.startedAfterMs == nil {
+                playback.startedAfterMs = Int((DispatchTime.now().uptimeNanoseconds - resetAt) / 1_000_000)
+            }
             cond.broadcast()
         }
         let n = min(samples.count - head, count)
@@ -121,6 +156,7 @@ public final class AudioRing {
             for i in 0..<k { dst[n - k + i] *= 1 - Float(i + 1) / Float(k) }
             playing = false
             ranDry = true
+            playback.ranDry += 1
         }
         if head == samples.count && head > 0 {
             samples.removeAll(keepingCapacity: true)
@@ -130,7 +166,10 @@ public final class AudioRing {
         // "Complete" is reported once per request. The speech request arrives over XPC and the render calls over another
         // channel, so the host's first pull for the NEXT request can come before `reset()`: it must get silence, not a
         // second "complete" of the old request (which ended the new one at once, without a sound).
-        if finished { done = false }
+        if finished {
+            done = false
+            playback.complete = true
+        }
         return (n, finished)
     }
 }

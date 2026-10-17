@@ -313,4 +313,23 @@ final class AudioRingTests: XCTestCase {
         XCTAssertTrue(r.ready(gen: g), "played to its end before the request looked: no waiting out the deadline")
         XCTAssertFalse(r.ready(gen: r.reset()))
     }
+
+    func testPlaybackIsRecordedPerRequest() {
+        let ring = AudioRing()
+        let g = ring.reset()
+        ring.append([Float](repeating: 0.5, count: 600), gen: g)
+        ring.finish(gen: g)
+        var buf = [Float](repeating: 0, count: 512)
+        var complete = false
+        while !complete { complete = buf.withUnsafeMutableBufferPointer { ring.read(into: $0.baseAddress!, count: 512, timeout: 0).1 } }
+        ring.reset()
+        let p = ring.previousPlayback()
+        XCTAssertEqual(p?.gen, g)
+        XCTAssertEqual(p?.pulls, 2)
+        XCTAssertEqual(p?.minFrames, 512)
+        XCTAssertEqual(p?.samples, 600)
+        XCTAssertNotNil(p?.startedAfterMs)
+        XCTAssertEqual(p?.complete, true)
+        XCTAssertEqual(p?.ranDry, 0)
+    }
 }

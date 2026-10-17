@@ -75,6 +75,23 @@ struct ShareFile: Transferable {
     }
 }
 
+/// The diagnostic log as a text file (see `AppModel.diagnosticText`), put together when the share sheet asks for it.
+struct DiagnosticFile: Transferable {
+    let model: AppModel
+
+    static var transferRepresentation: some TransferRepresentation {
+        FileRepresentation(exportedContentType: .plainText) { file in
+            let text = await file.model.diagnosticText()
+            let f = DateFormatter()
+            f.locale = Locale(identifier: "en_US_POSIX")
+            f.dateFormat = "yyyyMMdd-HHmm"
+            let url = FileManager.default.temporaryDirectory.appendingPathComponent("旁白助手日志-\(f.string(from: Date())).txt")
+            try Data(text.utf8).write(to: url, options: .atomic)
+            return SentTransferredFile(url)
+        }
+    }
+}
+
 /// How a preview is read.
 enum PreviewMode {
     /// The scheme as VoiceOver will read it.
@@ -352,6 +369,53 @@ final class AppModel: ObservableObject {
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
         guard let d = try? Data(contentsOf: url) else { return "读不到这个文件。" }
         return importText(String(decoding: d, as: UTF8.self))
+    }
+
+    // MARK: - diagnostic log
+
+    /// Whether the diagnostic log is being recorded at `now` (it stops by itself after `DiagnosticLog.duration`).
+    func isLogging(at now: Date = Date()) -> Bool { settings.isLogging(at: now) }
+
+    /// Switches the log on (for an hour) or off. What VoiceOver reads is recorded only when asked for again each time.
+    func setLogging(_ on: Bool) {
+        settings.logUntil = on ? Date().addingTimeInterval(DiagnosticLog.duration) : nil
+        settings.logSpeech = false
+    }
+
+    func diagnosticFile() -> DiagnosticFile { DiagnosticFile(model: self) }
+
+    /// The whole log: this phone, the app and its settings, then what the voice extension recorded.
+    func diagnosticText() async -> String {
+        let header = await MainActor.run { diagnosticHeader() }
+        let log = await ExtensionProbe.diagnosticLog()
+        let body = log.map { $0.isEmpty ? "（没有记录）" : $0 } ?? "（读不到语音扩展的记录）"
+        return header + "\n\n语音扩展的记录：\n" + body
+    }
+
+    private func diagnosticHeader() -> String {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        let info = Bundle.main.infoDictionary
+        var sys = utsname()
+        uname(&sys)
+        let machine = withUnsafeBytes(of: &sys.machine) { String(decoding: $0.prefix { $0 != 0 }, as: UTF8.self) }
+        let device = UIDevice.current
+        var lines = [
+            "旁白助手日志，导出于 \(f.string(from: Date()))",
+            "App \(info?["CFBundleShortVersionString"] as? String ?? "-") (\(info?["CFBundleVersion"] as? String ?? "-"))；\(device.systemName) \(device.systemVersion)；\(device.model) \(machine)\(ProcessInfo.processInfo.isiOSAppOnMac ? "；Mac 上的 iPhone 版" : "")",
+            "旁白：\(UIAccessibility.isVoiceOverRunning ? "开" : "关")；日志：\(settings.logUntil.map { isLogging() ? "记录到 \(f.string(from: $0))" : "已在 \(f.string(from: $0)) 停止" } ?? "未在记录")\(isLogging() && settings.logSpeech ? "，含朗读内容" : "")",
+            "规则：\(rules.count) 条，启用 \(rules.filter(\.enabled).count) 条",
+            "扩展可用的声音：\(usableVoices.map(\.id).joined(separator: ", "))",
+            "语速曲线：\(settings.rateMap.map { $0.points.map { "\($0[0])→\($0[1])" }.joined(separator: " ") } ?? "默认")",
+            "方案：",
+        ]
+        lines.append(ShareBundle(schemes: schemes, rules: nil).text())
+        return lines.joined(separator: "\n")
+    }
+
+    func clearDiagnostics(done: @escaping (Bool) -> Void) {
+        ExtensionProbe.clearDiagnosticLog { ok in DispatchQueue.main.async { done(ok) } }
     }
 
     // MARK: - self-checks

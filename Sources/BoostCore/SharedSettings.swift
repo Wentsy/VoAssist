@@ -98,15 +98,24 @@ public struct BoostSettings: Codable, Equatable {
     /// Measured speed of the system voices per `AVSpeechUtterance.rate` (nil = the table measured on the Mac). Used to give
     /// a secondary voice its relative speed.
     public var rateMap: RateMap?
+    /// The diagnostic log is recorded until then (switched on in the app for `DiagnosticLog.duration`); nil = off.
+    public var logUntil: Date?
+    /// The log also records what VoiceOver reads (off unless asked for each time the log is switched on).
+    public var logSpeech = false
 
-    enum CodingKeys: String, CodingKey { case rateMap }
+    enum CodingKeys: String, CodingKey { case rateMap, logUntil, logSpeech }
 
     public init() {}
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         rateMap = try c.decodeIfPresent(RateMap.self, forKey: .rateMap)
+        logUntil = try? c.decodeIfPresent(Date.self, forKey: .logUntil)
+        logSpeech = (try? c.decodeIfPresent(Bool.self, forKey: .logSpeech)) ?? false
     }
+
+    /// Whether the diagnostic log is being recorded at `now`.
+    public func isLogging(at now: Date = Date()) -> Bool { logUntil.map { $0 > now } ?? false }
 
     public var effectiveRateMap: RateMap { rateMap ?? .measured }
 

@@ -21,6 +21,29 @@ extension ExtensionProbe {
     }
 }
 
+extension ExtensionProbe {
+    /// The voice extension's diagnostic log (see `DiagnosticLog`); nil if the extension cannot be loaded.
+    static func diagnosticLog() async -> String? {
+        await withCheckedContinuation { cont in
+            AUAudioUnit.instantiate(with: extensionComponent, options: .loadOutOfProcess) { au, _ in
+                guard let au = au else { cont.resume(returning: nil); return }
+                au.fullState = [DiagnosticLog.commandKey: "sendLog"]
+                cont.resume(returning: au.fullState?[DiagnosticLog.logKey] as? String ?? "")
+            }
+        }
+    }
+
+    /// Empties the voice extension's diagnostic log; false if the extension cannot be loaded.
+    static func clearDiagnosticLog(done: @escaping (Bool) -> Void) {
+        AUAudioUnit.instantiate(with: extensionComponent, options: .loadOutOfProcess) { au, _ in
+            guard let au = au else { done(false); return }
+            au.fullState = [DiagnosticLog.commandKey: "clearLog"]
+            _ = au.fullState // a round trip: the command has arrived
+            done(true)
+        }
+    }
+}
+
 /// Drives the real voice extension the way the system does (loaded out of process, a speech request, then render calls)
 /// and collects its audio. This answers the one question that matters before VoiceOver is involved: can the extension
 /// call the system voices from inside its own process?

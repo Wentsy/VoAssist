@@ -58,6 +58,7 @@ struct ContentView: View {
     @State private var exportKind = ExportKind.all
     @State private var importing = false
     @State private var notice = ""
+    @State private var now = Date() // for the log switch, which turns itself off
     #if DEBUG
     @State private var nativeProbe = NativeRateProbe()
     @State private var debugLine = ""
@@ -92,6 +93,8 @@ struct ContentView: View {
                     """).font(.footnote)
                 }
 
+                logSection
+
                 Section("关于") {
                     NavigationLink("开源许可") { LicenseView() }
                 }
@@ -104,6 +107,7 @@ struct ContentView: View {
                 #endif
             }
             .navigationTitle("旁白助手")
+            .onReceive(Timer.publish(every: 20, on: .main, in: .common).autoconnect()) { now = $0 }
             .navigationDestination(isPresented: $showRules) { RulesView(model: model) }
         }
         .sheet(item: $editing) { e in SchemeEditView(model: model, draft: e.scheme, isNew: e.isNew) }
@@ -120,6 +124,17 @@ struct ContentView: View {
             let args = ProcessInfo.processInfo.arguments
             // development output line by line (on a Mac `open --stdout` gives a file, which would hold it all back)
             if args.contains(where: { ["-autotest", "-latency", "-listVoices"].contains($0) }) { setvbuf(stdout, nil, _IOLBF, 0) }
+            // development: switch the diagnostic log on (with what is read), empty it, print it
+            if args.contains("-logOn") { model.setLogging(true) }
+            if args.contains("-logSpeech") { model.settings.logSpeech = true }
+            if args.contains("-clearLog") { model.clearDiagnostics { ok in print("LOG cleared: \(ok)") } }
+            if args.contains("-printLog") {
+                Task {
+                    print(await model.diagnosticText())
+                    print("LOG done")
+                    devRunEnded()
+                }
+            }
             if args.contains("-autotest") { AutoTest.run(model) }
             if args.contains("-latency") { LatencyProbe.run() }
             // development: the Chinese and English voices the app sees (the voice extension sees fewer)
@@ -157,6 +172,27 @@ struct ContentView: View {
             }
         } header: {
             Text("语音方案")
+        }
+    }
+
+    /// The diagnostic log: on for an hour at most; what VoiceOver reads only when asked for each time.
+    private var logSection: some View {
+        Section {
+            Toggle("记录日志", isOn: Binding(get: { model.isLogging(at: now) }, set: { on in
+                model.setLogging(on)
+                now = Date()
+            }))
+            Toggle("记录朗读内容", isOn: Binding(get: { model.isLogging(at: now) && model.settings.logSpeech },
+                                           set: { model.settings.logSpeech = $0 }))
+                .disabled(!model.isLogging(at: now))
+            ShareLink(item: model.diagnosticFile(), preview: SharePreview("旁白助手日志")) {
+                Text("发送日志")
+            }
+            Button("清空日志") {
+                model.clearDiagnostics { ok in show(ok ? "日志已清空。" : "没能清空日志，请稍后再试。") }
+            }
+        } header: {
+            Text("日志")
         }
     }
 
