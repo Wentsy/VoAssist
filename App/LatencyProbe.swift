@@ -37,6 +37,7 @@ enum LatencyProbe {
                 measure(label, comp, voiceMatch: match)
             }
             print("LATENCY done")
+            DispatchQueue.main.async { devRunEnded() }
         }.start()
     }
 

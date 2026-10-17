@@ -118,6 +118,8 @@ struct ContentView: View {
         .onAppear {
             model.refreshVoices()
             let args = ProcessInfo.processInfo.arguments
+            // development output line by line (on a Mac `open --stdout` gives a file, which would hold it all back)
+            if args.contains(where: { ["-autotest", "-latency", "-listVoices"].contains($0) }) { setvbuf(stdout, nil, _IOLBF, 0) }
             if args.contains("-autotest") { AutoTest.run(model) }
             if args.contains("-latency") { LatencyProbe.run() }
             // development: the Chinese and English voices the app sees (the voice extension sees fewer)
@@ -183,6 +185,11 @@ struct ContentView: View {
     }
 }
 
+/// A development run is over: on a Mac (the iPhone app there) the app quits, as nothing else ends it from the command line.
+func devRunEnded() {
+    if ProcessInfo.processInfo.isiOSAppOnMac { exit(0) }
+}
+
 /// `-autotest` launch argument (simulator / development): scheme preview and the extension check, results on stdout.
 enum AutoTest {
     static func run(_ model: AppModel) {
@@ -217,6 +224,7 @@ enum AutoTest {
                 try? WAV.data(model.lastPreview, sampleRate: SystemVoice.sampleRate).write(to: docs.appendingPathComponent("preview.wav"))
                 print("AUTOTEST wav: \(docs.path)")
                 print("AUTOTEST done ok=\(r.ok)")
+                devRunEnded()
             }
         }
     }
