@@ -115,6 +115,7 @@ final class AppModel: ObservableObject {
 
     /// Reads the installed voices; on the very first launch creates the default schemes; measures what is still missing.
     func refreshVoices() {
+        SharedStore.openForLockScreen()
         systemVoices = AVSpeechSynthesisVoice.speechVoices()
             .filter { VoiceEntry.isWrappable($0.identifier) }
             .sorted { ($0.quality.rawValue, $1.name) > ($1.quality.rawValue, $0.name) }

@@ -331,3 +331,31 @@ final class ApplePlanTests: XCTestCase {
         XCTAssertEqual(ApplePlanner.rebuild(p), #"<speak><prosody rate="150%">设置<break time="250ms"/>按钮</prosody></speak>"#)
     }
 }
+
+final class SharedFileTests: XCTestCase {
+    /// After a restart the shared files are there but closed until the first unlock (data protection), and VoiceOver
+    /// reads the lock screen meanwhile: what the extension got then must not stick once they open (the boost was lost
+    /// until the scheme was changed).
+    func testFilesClosedUntilTheFirstUnlockAreReadOnceTheyOpen() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        SharedStore.testContainer = dir
+        defer {
+            SharedStore.testContainer = nil
+            try? FileManager.default.removeItem(at: dir)
+        }
+        var s = VoiceScheme.defaultTingting
+        s.boost = 4.5
+        XCTAssertTrue(VoiceScheme.save([s]))
+        XCTAssertTrue(RuleBook.save([ReadingRule(find: "甲", replace: "乙")]))
+        let files = ["schemes.json", "rules.json"].map { dir.appendingPathComponent($0).path }
+
+        for f in files { try FileManager.default.setAttributes([.posixPermissions: 0], ofItemAtPath: f) }
+        XCTAssertEqual(VoiceScheme.shared().first?.boost, 1, "the defaults while closed")
+        XCTAssertEqual(RuleBook.shared().apply("甲"), "甲")
+
+        for f in files { try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: f) }
+        XCTAssertEqual(VoiceScheme.shared().first?.boost, 4.5, "read once open, though the file did not change")
+        XCTAssertEqual(RuleBook.shared().apply("甲"), "乙")
+    }
+}

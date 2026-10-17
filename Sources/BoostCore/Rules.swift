@@ -100,7 +100,12 @@ public struct RuleBook {
 
     // MARK: shared file
 
-    public static func loadRules() -> [ReadingRule] { SharedStore.readList(ReadingRule.self, "rules.json") ?? [] }
+    public static func loadRules() -> [ReadingRule] { loadRulesIfOpen() ?? [] }
+
+    /// nil while the file is there but cannot be read (see `VoiceScheme.loadIfOpen`).
+    static func loadRulesIfOpen() -> [ReadingRule]? {
+        SharedStore.readList(ReadingRule.self, "rules.json") ?? (SharedStore.exists("rules.json") ? nil : [])
+    }
 
     @discardableResult
     public static func save(_ rules: [ReadingRule]) -> Bool { SharedStore.write(rules, "rules.json") }
@@ -108,12 +113,14 @@ public struct RuleBook {
     private static let lock = NSLock()
     private static var cache: (Date?, RuleBook)?
 
-    /// The shared rules, compiled once per change of the file (the extension asks for every request).
+    /// The shared rules, compiled once per change of the file (the extension asks for every request); a file that cannot
+    /// be read yet is not cached (see `VoiceScheme.shared`).
     public static func shared() -> RuleBook {
         let date = SharedStore.modificationDate("rules.json")
         lock.lock(); defer { lock.unlock() }
         if let c = cache, c.0 == date { return c.1 }
-        let book = RuleBook(loadRules())
+        guard let rules = loadRulesIfOpen() else { return cache?.1 ?? RuleBook([]) }
+        let book = RuleBook(rules)
         cache = (date, book)
         return book
     }

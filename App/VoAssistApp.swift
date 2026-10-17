@@ -187,6 +187,11 @@ struct ContentView: View {
 enum AutoTest {
     static func run(_ model: AppModel) {
         print("AUTOTEST schemes: \(model.schemes.map { "\($0.name)[\($0.language)]" }.joined(separator: ", ")), app group: \(model.hasAppGroup)")
+        let protection = SharedStore.sharedFiles.map { name in
+            let a = SharedStore.container.flatMap { try? FileManager.default.attributesOfItem(atPath: $0.appendingPathComponent(name).path) }
+            return "\(name) \((a?[.protectionKey] as? FileProtectionType)?.rawValue ?? "-")"
+        }
+        print("AUTOTEST file protection: \(protection.joined(separator: ", "))")
         print("AUTOTEST languages: \(model.languages.sorted().joined(separator: " "))")
         guard var s = model.schemes.first(where: { $0.language == "zh-CN" }) ?? model.schemes.first else {
             print("AUTOTEST no schemes"); return

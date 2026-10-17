@@ -105,8 +105,12 @@ public struct VoiceScheme: Codable, Identifiable, Equatable, Hashable {
     /// The app has never written its list (first launch): the defaults apply. An empty list is the user's choice.
     public static var neverSaved: Bool { !SharedStore.exists(file) }
 
-    public static func load() -> [VoiceScheme] {
-        guard let list = SharedStore.readList(VoiceScheme.self, file) else { return defaults }
+    public static func load() -> [VoiceScheme] { loadIfOpen() ?? defaults }
+
+    /// The saved list (the defaults if there is none); nil while there is one that cannot be read, as after a restart until
+    /// the first unlock (see `SharedStore.write`).
+    static func loadIfOpen() -> [VoiceScheme]? {
+        guard let list = SharedStore.readList(VoiceScheme.self, file) else { return SharedStore.exists(file) ? nil : defaults }
         return list.filter { VoiceEntry.isWrappable($0.main.id) }.map { $0.clamped() }
     }
 
@@ -116,13 +120,15 @@ public struct VoiceScheme: Codable, Identifiable, Equatable, Hashable {
     private static let lock = NSLock()
     private static var cache: (Date?, Bool, [VoiceScheme])?
 
-    /// The list, re-read only when the file changed (the extension asks for every request).
+    /// The list, re-read only when the file changed (the extension asks for every request). A file that cannot be read
+    /// yet is not cached, or what stood in for it would stay until the next change (the boost was lost after a restart
+    /// until the scheme was edited): the last list read, or the defaults, until the next request reads it.
     public static func shared() -> [VoiceScheme] {
         let date = SharedStore.modificationDate(file)
         let exists = SharedStore.exists(file)
         lock.lock(); defer { lock.unlock() }
         if let c = cache, c.0 == date, c.1 == exists { return c.2 }
-        let list = load()
+        guard let list = loadIfOpen() else { return cache?.2 ?? defaults }
         cache = (date, exists, list)
         return list
     }

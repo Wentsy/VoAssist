@@ -7,9 +7,12 @@ public enum SharedStore {
     /// Must match `com.apple.security.application-groups` in both targets' entitlements (project.yml).
     public static let groupID = "group.com.zdyi.voassist"
 
+    /// Tests put the files in a folder of their own.
+    static var testContainer: URL?
+
     /// The App Group container; nil when the entitlement is missing. The Mac tools fall back to no file at all.
     public static var container: URL? {
-        FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: groupID)
+        testContainer ?? FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: groupID)
     }
 
     static func read<T: Decodable>(_ type: T.Type, _ name: String) -> T? {
@@ -23,11 +26,26 @@ public enum SharedStore {
         read([Lossy<T>].self, name)?.compactMap(\.value)
     }
 
+    /// Written without data protection: by default the system keeps a file closed after a restart until the first unlock,
+    /// while VoiceOver already reads the lock screen with our voice. (Schemes and reading rules, nothing private.)
     @discardableResult
     static func write<T: Encodable>(_ value: T, _ name: String) -> Bool {
         guard let u = container?.appendingPathComponent(name), let d = try? JSONEncoder().encode(value) else { return false }
-        return (try? d.write(to: u, options: .atomic)) != nil
+        return (try? d.write(to: u, options: [.atomic, .noFileProtection])) != nil
     }
+
+    /// The files the extension reads, as `write` leaves them now: earlier builds wrote them with the default protection.
+    public static func openForLockScreen() {
+        #if os(iOS)
+        guard let c = container else { return }
+        for name in sharedFiles {
+            try? FileManager.default.setAttributes([.protectionKey: FileProtectionType.none], ofItemAtPath: c.appendingPathComponent(name).path)
+        }
+        #endif
+    }
+
+    /// The files the extension reads.
+    public static let sharedFiles = ["schemes.json", "rules.json", "settings.json"]
 
     static func exists(_ name: String) -> Bool {
         guard let u = container?.appendingPathComponent(name) else { return false }
