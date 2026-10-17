@@ -253,9 +253,19 @@ public final class SystemVoice {
     }
 
     /// Loads the voice and the synthesizer (the first utterance costs ~250 ms, later ones ~5 ms before the first audio).
-    public func warmUp(_ entry: VoiceEntry) {
-        guard let v = resolve(entry) else { return }
-        _ = speak(LanguageRuns.isChinese(entry.lang) ? "好" : "a", voice: v, rate: 0.5, pitch: 1, stallTimeout: 2, isCancelled: { false }, onPCM: { _ in })
+    /// A secondary voice is loaded inside an utterance of its scheme's main voice (`within`): read on its own it would be
+    /// the voice the synthesizer was left on, and before iOS 27 the next request in the main voice then paid a voice
+    /// switch first (~290 ms; switches take 280-330 ms there, 3-27 ms on iOS 27: measured on the iOS 26.5 and 18.6
+    /// simulators and an iOS 27 iPhone). Stops when `isCancelled` turns true (a request came); true if it went through.
+    @discardableResult
+    public func warmUp(_ entry: VoiceEntry, within main: VoiceEntry? = nil, isCancelled: () -> Bool = { false }) -> Bool {
+        guard let v = resolve(entry) else { return false }
+        func word(_ lang: String) -> String { LanguageRuns.isChinese(lang) ? "好" : "a" }
+        if let m = main, let mv = resolve(m), mv.identifier != v.identifier {
+            let ssml = "<speak>\(word(m.lang))<voice name=\"\(v.identifier)\">\(word(entry.lang))</voice></speak>"
+            return speak(ssml: ssml, voice: mv, stretches: 2, stallTimeout: 2, isCancelled: isCancelled) { _, _ in } == .done
+        }
+        return speak(word(entry.lang), voice: v, rate: 0.5, pitch: 1, stallTimeout: 2, isCancelled: isCancelled) { _ in } == .done
     }
 }
 

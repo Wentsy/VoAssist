@@ -33,7 +33,7 @@ final class SynthWorker {
 
     private let cond = NSCondition()
     private var pending: Job?
-    private var warmEntries: [VoiceEntry] = []
+    private var warmEntries: [(entry: VoiceEntry, within: VoiceEntry?)] = [] // a secondary voice: inside its main one
     private var warmed = Set<String>() // voices this process has already loaded (worker thread only)
     private var stopping = false
     private let voice = SystemVoice()
@@ -53,9 +53,18 @@ final class SynthWorker {
         cond.lock(); pending = job; cond.signal(); cond.unlock()
     }
 
-    /// Loads these voices in the background (a voice's first utterance is ~250 ms slower).
-    func warm(_ entries: [VoiceEntry]) {
-        cond.lock(); warmEntries = entries; cond.signal(); cond.unlock()
+    /// Loads a scheme's voices in the background (a voice's first utterance is ~250 ms slower).
+    func warm(_ main: VoiceEntry, secondary: VoiceEntry?) {
+        cond.lock()
+        warmEntries = [(main, nil)] + (secondary.map { [($0, main)] } ?? [])
+        cond.signal()
+        cond.unlock()
+    }
+
+    /// A request is waiting: a warm-up gives way to it.
+    private var requestWaiting: Bool {
+        cond.lock(); defer { cond.unlock() }
+        return pending != nil || stopping
     }
 
     private func loop() {
@@ -71,13 +80,17 @@ final class SynthWorker {
             if let job = job {
                 run(job)
                 warmed.insert(job.scheme.main.id)
-                // VoiceOver may use any of our schemes: once one is in use, load its secondary voice while idle
+                // VoiceOver may use any of our schemes: once one is in use, load its secondary voice while idle, unless
+                // the request had it read already
                 if let other = job.scheme.secondary, !warmed.contains(other.id) {
-                    cond.lock(); warmEntries.append(other); cond.unlock()
+                    if voice.lastSwitchWaitsMs.isEmpty {
+                        cond.lock(); warmEntries.append((other, job.scheme.main)); cond.unlock()
+                    } else {
+                        warmed.insert(other.id)
+                    }
                 }
-            } else if let w = warm, !warmed.contains(w.id) {
-                voice.warmUp(w)
-                warmed.insert(w.id)
+            } else if let w = warm, !warmed.contains(w.entry.id) {
+                if voice.warmUp(w.entry, within: w.within, isCancelled: { self.requestWaiting }) { warmed.insert(w.entry.id) }
             }
         }
     }
@@ -217,7 +230,7 @@ public class BoostAudioUnit: AVSpeechSynthesisProviderAudioUnit {
         // a guess at the scheme VoiceOver uses (the first one) and its secondary voice; the worker loads the right ones
         // after the first request in any case
         guard let first = schemes.first else { return }
-        worker.warm([first.main] + (first.secondary.map { [$0] } ?? []))
+        worker.warm(first.main, secondary: first.secondary)
     }
 
     public override var internalRenderBlock: AUInternalRenderBlock {
