@@ -4,9 +4,8 @@ import AudioToolbox
 /// `-interruptTest` launch argument (development): fast swiping, as the extension sees it. Drives the extension as a host
 /// does: a long item cut short after 60 ms by the next, short one, in turns with a short one alone; then six long items
 /// in a row, each cut short by the next after 80 ms, and a short one (synthesizers just stopped are used again). The
-/// timings are in
-/// the diagnostic log (`-logOn -clearLog -interruptTest`, then `-printLog`): "first audio after" of each short request,
-/// and how long its `synthesizeSpeechRequest` took (the host's calls come one after another).
+/// timings are in the diagnostic log (`-logOn -clearLog -interruptTest`, then `-printLog`): "first audio after" of each
+/// request, and how long its `synthesizeSpeechRequest` took (the host's calls come one after another).
 enum InterruptTest {
     static func run() {
         AUAudioUnit.instantiate(with: extensionComponent, options: .loadOutOfProcess) { au, _ in

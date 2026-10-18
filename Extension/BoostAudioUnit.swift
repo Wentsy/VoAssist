@@ -322,7 +322,7 @@ public class BoostAudioUnit: AVSpeechSynthesisProviderAudioUnit {
                 if i == 0 {
                     // possibly a real-time thread: no real waiting (the synthesis runs ~150x faster than real time and the
                     // first audio is awaited in synthesizeSpeechRequest), only a few ms of slack for a late block
-                    // (before iOS 27 the host pulls ahead of real time: a late block is better than a gap)
+                    // (before iOS 27 more of it: a host pulling ahead of real time had better get a late block than a gap)
                     let (n, finished) = ring.read(into: dst, count: frames, timeout: legacy ? 0.02 : 0.003)
                     #if LATENCY_PROBE
                     if let line = LatencyTrace.sound(dst, n) {

@@ -49,9 +49,10 @@ public final class AudioRing {
     }
 
     /// Say "complete" (with no frames) on every pull while there is nothing to play and nothing is coming: before a
-    /// request, after its end, after a cancel. As eSpeak-NG's provider does, which VoiceOver before iOS 27 goes on with
-    /// to an item's next part (see `BoostAudioUnit.beforeIOS27`); a pull answered with silence instead says "still
-    /// speaking". Only for hosts that pull after the request has returned (VoiceOver does).
+    /// request, after its end, after a cancel, as eSpeak-NG's provider does (a pull answered with silence says "still
+    /// speaking"). Set before iOS 27 while chasing VoiceOver's dropped parts there, which had another cause
+    /// (`AnnouncementGuard`); kept, as VoiceOver reads well with it. Only for hosts that pull after the request has
+    /// returned (VoiceOver does; the app's probes wait first, `waitAsVoiceOverDoes`).
     public var completeWhenIdle = false
     private var producing = false // a request is under way: its audio is still to come
 

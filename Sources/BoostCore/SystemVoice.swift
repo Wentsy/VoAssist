@@ -311,10 +311,11 @@ public final class SystemVoice {
     }
 
     /// Loads the voice and the synthesizer (the first utterance costs ~250 ms, later ones ~5 ms before the first audio).
-    /// A secondary voice is loaded inside an utterance of its scheme's main voice (`within`): read on its own it would be
-    /// the voice the synthesizer was left on, and before iOS 27 the next request in the main voice then paid a voice
-    /// switch first (~290 ms; switches take 280-330 ms there, 3-27 ms on iOS 27: measured on the iOS 26.5 and 18.6
-    /// simulators and an iOS 27 iPhone). Stops when `isCancelled` turns true (a request came); true if it went through.
+    /// Where one synthesizer reads both voices (iOS 27), a secondary voice is loaded inside an utterance of its scheme's
+    /// main voice (`within`): read on its own it would be the voice the synthesizer was left on, and the next request in
+    /// the main voice would pay a voice switch first (3-27 ms on an iOS 27 iPhone; ~290 ms on the iOS 26.5 and 18.6
+    /// simulators, where each voice now has synthesizers of its own). Stops when `isCancelled` turns true (a request
+    /// came); true if it went through.
     @discardableResult
     public func warmUp(_ entry: VoiceEntry, within main: VoiceEntry? = nil, isCancelled: () -> Bool = { false }) -> Bool {
         guard let v = resolve(entry) else { return false }
@@ -438,7 +439,7 @@ extension BoostSynthesis {
     /// 200-950 ms per request with a Latin word in a log from an iPad on iPadOS 26.7 (iOS 27: 1-2 ms either way). So there
     /// a request is read stretch by stretch, each language's stretches by a synthesizer of its own (`main`, `other`), as
     /// plain utterances. VoiceOver's requests there are short and simple (a name; at times a break and a second part;
-    /// `<prosody volume pitch>`, no rate: the system speeds the audio up itself), so `SSML.parse` has all of it.
+    /// `<prosody volume pitch>`, and no rate at VoiceOver's 50 % on an iPad), so `SSML.parse` has all of it.
     public static func runPerVoice(ssml: String, scheme: VoiceScheme, settings s: BoostSettings, rules: RuleBook,
                                    main mainSynth: SystemVoice, other otherSynth: SystemVoice,
                                    isCancelled: () -> Bool, emit: ([Float]) -> Void) -> Status {
