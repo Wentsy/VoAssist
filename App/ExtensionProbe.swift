@@ -44,6 +44,12 @@ extension ExtensionProbe {
     }
 }
 
+/// The app's proxy sends a speech request without waiting for it; VoiceOver pulls only once it has returned, and before
+/// iOS 27 the extension answers a pull with nothing coming with "complete". So a probe there gives it a moment first.
+func waitAsVoiceOverDoes() {
+    if ProcessInfo.processInfo.operatingSystemVersion.majorVersion < 27 { Thread.sleep(forTimeInterval: 0.3) }
+}
+
 /// Drives the real voice extension the way the system does (loaded out of process, a speech request, then render calls)
 /// and collects its audio. This answers the one question that matters before VoiceOver is involved: can the extension
 /// call the system voices from inside its own process?
@@ -123,6 +129,7 @@ enum ExtensionProbe {
             var lead = 0
             let t0 = Date()
             _ = au.perform(synthSel, with: request)
+            waitAsVoiceOverDoes()
             var complete = false
             let maxFrames = Int(format.sampleRate * 30)
             while out.count < maxFrames {

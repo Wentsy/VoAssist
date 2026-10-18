@@ -87,6 +87,7 @@ enum LatencyProbe {
             let req = AVSpeechSynthesisProviderRequest(ssmlRepresentation: ssml, voice: voice)
             let start = Date()
             _ = au.perform(synthSel, with: req)
+            waitAsVoiceOverDoes()
             let returned = Date().timeIntervalSince(start)
             // pull in real time, as a player does, until the first sound
             var pulled = 0

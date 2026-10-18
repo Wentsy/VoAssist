@@ -138,6 +138,7 @@ struct ContentView: View {
             if args.contains("-autotest") { AutoTest.run(model) }
             if args.contains("-ssmlTest") { SSMLTest.run() }
             if args.contains("-switchTest") { SwitchTest.run() }
+            if args.contains("-voiceCompare") { setvbuf(stdout, nil, _IOLBF, 0); VoiceCompare.run() }
             if args.contains("-latency") { LatencyProbe.run() }
             // development: the Chinese and English voices the app sees (the voice extension sees fewer)
             if args.contains("-listVoices") {

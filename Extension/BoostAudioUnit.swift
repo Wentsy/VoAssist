@@ -160,14 +160,14 @@ final class SynthWorker {
 }
 
 public class BoostAudioUnit: AVSpeechSynthesisProviderAudioUnit {
-    /// Before iOS 27 VoiceOver works another way, as a log from an iPhone 14 on iOS 26.7 shows: it sends each part of an
-    /// item as a request of its own, and only the first came ("点赞" without its count, "可按住 转文字" without "文本栏",
-    /// "微信" without "标签"), though the host pulled each one to its end and stopped at "complete"; and it pulls faster
-    /// than real time, which ran the stream dry twice in nearly every request (a gap each time). Apple: "the system may
-    /// delay speech output until it delivers these markers", and the extension sent none. So before iOS 27 the whole
-    /// request is ready before the request returns (27-45 ms for a name there, 136-184 ms for a long chat line; at most
-    /// 1 s, after which the rest streams), markers go to the host with it (`SpeechMarkers`), and a pull waits a little for
-    /// a late block rather than leave a gap.
+    /// Before iOS 27 VoiceOver works another way (logs from iOS 26.7 phones and an iPad): it sends each part of an item as
+    /// a request of its own, after a cancel, and went on to no second part with this extension ("点赞" without its count,
+    /// "可按住 转文字" without "文本栏", no hint), while Apple's voices and eSpeak-NG-style providers read them all. There
+    /// the extension now behaves as eSpeak-NG's provider does: the whole request is ready before the request returns
+    /// (27-45 ms for a name, 136-184 ms for a long chat line on those phones; up to 3 s), and a pull with nothing to play
+    /// and nothing coming says "complete" with no frames (`AudioRing.completeWhenIdle`), where it used to hand over
+    /// silence, as if still speaking. The host pulls faster than real time there, and a pull waits a little for a late
+    /// block rather than leave a gap.
     static let beforeIOS27 = ProcessInfo.processInfo.operatingSystemVersion.majorVersion < 27
 
     private var outputBus: AUAudioUnitBus
@@ -182,6 +182,7 @@ public class BoostAudioUnit: AVSpeechSynthesisProviderAudioUnit {
         outputBus = try AUAudioUnitBus(format: format)
         try super.init(componentDescription: componentDescription, options: options)
         _outputBusses = AUAudioUnitBusArray(audioUnit: self, busType: .output, busses: [outputBus])
+        ring.completeWhenIdle = BoostAudioUnit.beforeIOS27
         // maximumFramesToRender is left to the host (a limit of its own can make render calls fail while music plays).
         // The synthesizer is not touched here: the system also creates this unit just to list voices.
         worker.start()
@@ -282,8 +283,7 @@ public class BoostAudioUnit: AVSpeechSynthesisProviderAudioUnit {
                     if n < frames { (dst + n).update(repeating: 0, count: frames - n) }
                     if finished {
                         actionFlags.pointee = .offlineUnitRenderAction_Complete
-                        // the last block reports the frames it really holds; before iOS 27 a full block, as Apple's sample
-                        if !legacy { delivered = n }
+                        delivered = n // the last block reports the frames it really holds (none when idle)
                     }
                 } else {
                     dst.update(repeating: 0, count: frames)
@@ -302,7 +302,7 @@ public class BoostAudioUnit: AVSpeechSynthesisProviderAudioUnit {
         #if LATENCY_PROBE
         LatencyTrace.begin(Thread.isMainThread ? "request(main)" : "request(bg)")
         #endif
-        let gen = ring.reset() // also tells a still-running previous utterance to stop
+        let gen = ring.reset(producing: true) // also tells a still-running previous utterance to stop
         recordPreviousPlayback()
         worker.submit(SynthWorker.Job(ssml: speechRequest.ssmlRepresentation, scheme: scheme(for: speechRequest.voice), gen: gen, ring: ring,
                                       voice: "\(speechRequest.voice.identifier) \(speechRequest.voice.primaryLanguages)/\(speechRequest.voice.supportedLanguages)"))
@@ -312,7 +312,7 @@ public class BoostAudioUnit: AVSpeechSynthesisProviderAudioUnit {
         // Start with a little audio in hand (or the whole of a shorter utterance), so that the first blocks do not run dry
         // while the speed-up is still catching up; more during a voice switch (AudioRing). Before iOS 27: the whole request.
         let whole = BoostAudioUnit.beforeIOS27
-        let deadline = Date(timeIntervalSinceNow: whole ? 1 : 0.8)
+        let deadline = Date(timeIntervalSinceNow: whole ? 3 : 0.8)
         if Thread.isMainThread {
             while !ring.ready(gen: gen, whole: whole) && Date() < deadline {
                 RunLoop.current.run(mode: .default, before: Date(timeIntervalSinceNow: 0.002))
@@ -320,7 +320,6 @@ public class BoostAudioUnit: AVSpeechSynthesisProviderAudioUnit {
         } else {
             ring.waitForAudio(gen: gen, timeout: deadline.timeIntervalSinceNow, whole: whole)
         }
-        if whole { sendMarkers(speechRequest, gen: gen) }
         #if LATENCY_PROBE
         LatencyTrace.mark("ready")
         #endif
@@ -342,17 +341,6 @@ public class BoostAudioUnit: AVSpeechSynthesisProviderAudioUnit {
             ring.reset()
             recordPreviousPlayback()
         }
-    }
-
-    /// The markers of a request ready in full (see `beforeIOS27`), and in the diagnostic log whether the host asked for any.
-    private func sendMarkers(_ request: AVSpeechSynthesisProviderRequest, gen: Int) {
-        let block = speechSynthesisOutputMetadataBlock
-        let samples = ring.samplesSoFar(gen: gen)
-        let parts = block == nil ? [] : SpeechMarkers.parts(ssml: request.ssmlRepresentation, samples: samples)
-        let markers = SpeechMarkers.markers(parts)
-        let names = parts.compactMap(\.name)
-        DiagnosticLog.write("markers #\(gen): \(block == nil ? "the host set no marker block" : "\(markers.count) sent") for \(samples) samples\(names.isEmpty ? "" : ", bookmarks \(names.joined(separator: " "))")")
-        if let block = block, !markers.isEmpty { block(markers, request) }
     }
 
     /// How the host played the request before (over once the next one comes, or it is cancelled), for the diagnostic log.

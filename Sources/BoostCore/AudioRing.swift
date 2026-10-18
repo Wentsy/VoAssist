@@ -48,6 +48,13 @@ public final class AudioRing {
         public var complete = false
     }
 
+    /// Say "complete" (with no frames) on every pull while there is nothing to play and nothing is coming: before a
+    /// request, after its end, after a cancel. As eSpeak-NG's provider does, which VoiceOver before iOS 27 goes on with
+    /// to an item's next part (see `BoostAudioUnit.beforeIOS27`); a pull answered with silence instead says "still
+    /// speaking". Only for hosts that pull after the request has returned (VoiceOver does).
+    public var completeWhenIdle = false
+    private var producing = false // a request is under way: its audio is still to come
+
     public init() {}
 
     /// The samples handed over for request `g` so far (0 once a newer one began).
@@ -74,10 +81,12 @@ public final class AudioRing {
     }
 
     /// Starts a new utterance: drops pending audio and returns its generation number.
+    /// `producing`: a new request begins (its audio follows), else the current one is dropped.
     @discardableResult
-    public func reset() -> Int {
+    public func reset(producing p: Bool = false) -> Int {
         cond.lock(); defer { cond.unlock() }
         gen += 1
+        producing = p
         lastPlayback = playback
         playback = Playback(gen: gen)
         resetAt = DispatchTime.now().uptimeNanoseconds
@@ -103,7 +112,11 @@ public final class AudioRing {
 
     public func finish(gen g: Int) {
         cond.lock(); defer { cond.unlock() }
-        if g == gen { done = true; cond.broadcast() }
+        if g == gen {
+            done = true
+            producing = false
+            cond.broadcast()
+        }
     }
 
     /// The system voice is switching voices (true) or the next voice has sounded (false).
@@ -140,6 +153,11 @@ public final class AudioRing {
         }
         playback.minFrames = playback.pulls == 1 ? count : min(playback.minFrames, count)
         playback.maxFrames = max(playback.maxFrames, count)
+        if completeWhenIdle && !producing && samples.count - head == 0 {
+            if begun { playback.complete = true }
+            done = false
+            return (0, true)
+        }
         let deadline = Date(timeIntervalSinceNow: timeout)
         while samples.count - head < count && !done {
             if !cond.wait(until: deadline) { break }

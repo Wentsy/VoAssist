@@ -51,31 +51,3 @@ final class SSMLTests: XCTestCase {
     }
 }
 
-final class SpeechMarkersTests: XCTestCase {
-    func testPartsOfAVoiceOverRequest() {
-        let ssml = #"<speak><prosody rate="100%"><s><lang xml:lang="cmn-CN">可按住 转文字</lang></s><s><lang xml:lang="cmn-CN">文本栏</lang></s></prosody></speak>"#
-        let ns = ssml as NSString
-        let parts = SpeechMarkers.parts(ssml: ssml, samples: 8000)
-        XCTAssertEqual(parts.map(\.mark), [.paragraph, .sentence, .word, .word, .sentence, .word])
-        XCTAssertEqual(parts.map { ns.substring(with: $0.range) },
-                       [ns.substring(with: NSRange(location: ns.range(of: "可按住").location,
-                                                   length: NSMaxRange(ns.range(of: "文本栏")) - ns.range(of: "可按住").location)),
-                        "可按住 转文字", "可按住", "转文字", "文本栏", "文本栏"])
-        // 9 characters: the second word after 3, the second sentence after 6
-        XCTAssertEqual(parts.map(\.sample), [0, 0, 0, 8000 * 3 / 9, 8000 * 6 / 9, 8000 * 6 / 9])
-        XCTAssertEqual(SpeechMarkers.markers(ssml: ssml, samples: 8000).last?.byteSampleOffset, 8000 * 6 / 9 * 4)
-        XCTAssertEqual(SpeechMarkers.parts(ssml: "<speak><break time=\"500ms\"/></speak>", samples: 100), [])
-    }
-
-    func testBookmarksWhereTheyStand() {
-        let ssml = #"<speak><s>点赞</s><mark name="a"/><s>按钮</s><mark name='end'/></speak>"#
-        let parts = SpeechMarkers.parts(ssml: ssml, samples: 4000)
-        let marks = parts.filter { $0.mark == .bookmark }
-        XCTAssertEqual(marks.map(\.name), ["a", "end"])
-        XCTAssertEqual(marks.map(\.sample), [2000, 4000])
-        // the bookmark comes before the sentence that starts where it stands
-        let i = parts.firstIndex { $0.name == "a" }!
-        XCTAssertEqual(parts[i + 1].mark, .sentence)
-        XCTAssertEqual(SpeechMarkers.parts(ssml: #"<speak><mark name="x"/></speak>"#, samples: 10).map(\.name), ["x"])
-    }
-}

@@ -349,4 +349,24 @@ final class AudioRingTests: XCTestCase {
         ring.reset()
         XCTAssertEqual(ring.samplesSoFar(gen: g), 0)
     }
+
+    /// Before iOS 27, as eSpeak-NG's provider: "complete" with no frames whenever nothing is to play or coming.
+    func testCompleteWhenIdle() {
+        let ring = AudioRing()
+        ring.completeWhenIdle = true
+        var buf = [Float](repeating: 1, count: 256)
+        func pull() -> (Int, Bool) { buf.withUnsafeMutableBufferPointer { ring.read(into: $0.baseAddress!, count: 256, timeout: 0) } }
+        XCTAssertTrue(pull() == (0, true), "before any request")
+        let g = ring.reset(producing: true)
+        XCTAssertFalse(pull().1, "a request under way is not complete before its audio")
+        ring.append([Float](repeating: 0.5, count: 300), gen: g)
+        ring.finish(gen: g)
+        XCTAssertTrue(pull() == (256, false))
+        XCTAssertTrue(pull() == (44, true))
+        XCTAssertTrue(pull() == (0, true), "after the end")
+        XCTAssertTrue(pull() == (0, true))
+        ring.reset()
+        XCTAssertTrue(pull() == (0, true), "after a cancel")
+        XCTAssertEqual(ring.previousPlayback()?.complete, true)
+    }
 }
