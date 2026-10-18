@@ -162,8 +162,9 @@ final class SynthWorker {
 public class BoostAudioUnit: AVSpeechSynthesisProviderAudioUnit {
     /// Before iOS 27 VoiceOver works another way (logs from iOS 26.7 phones and an iPad): it sends each part of an item as
     /// a request of its own, after a cancel, and went on to no second part with this extension ("点赞" without its count,
-    /// "可按住 转文字" without "文本栏", no hint), while Apple's voices and eSpeak-NG-style providers read them all. There
-    /// the extension now behaves as eSpeak-NG's provider does: the whole request is ready before the request returns
+    /// "可按住 转文字" without "文本栏", no hint), while Apple's voices and eSpeak-NG-style providers read them all: the
+    /// system synthesizer announced every utterance to VoiceOver, which then dropped the rest (`AnnouncementGuard`).
+    /// There the extension also behaves as eSpeak-NG's provider does: the whole request is ready before the request returns
     /// (27-45 ms for a name, 136-184 ms for a long chat line on those phones; up to 3 s), and a pull with nothing to play
     /// and nothing coming says "complete" with no frames (`AudioRing.completeWhenIdle`), where it used to hand over
     /// silence, as if still speaking. The host pulls faster than real time there, and a pull waits a little for a late
@@ -183,6 +184,7 @@ public class BoostAudioUnit: AVSpeechSynthesisProviderAudioUnit {
         try super.init(componentDescription: componentDescription, options: options)
         _outputBusses = AUAudioUnitBusArray(audioUnit: self, busType: .output, busses: [outputBus])
         ring.completeWhenIdle = BoostAudioUnit.beforeIOS27
+        if BoostAudioUnit.beforeIOS27 && !ProcessInfo.processInfo.isiOSAppOnMac { _ = AnnouncementGuard.install() }
         // maximumFramesToRender is left to the host (a limit of its own can make render calls fail while music plays).
         // The synthesizer is not touched here: the system also creates this unit just to list voices.
         worker.start()

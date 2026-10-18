@@ -140,6 +140,7 @@ struct ContentView: View {
             if args.contains("-switchTest") { SwitchTest.run() }
             if args.contains("-voiceCompare") { setvbuf(stdout, nil, _IOLBF, 0); VoiceCompare.run() }
             if args.contains("-latency") { LatencyProbe.run() }
+            if args.contains("-focusTest") { setvbuf(stdout, nil, _IOLBF, 0); FocusTest.run() }
             // development: the Chinese and English voices the app sees (the voice extension sees fewer)
             if args.contains("-listVoices") {
                 for v in AVSpeechSynthesisVoice.speechVoices() where v.language.hasPrefix("zh") || v.language.hasPrefix("yue") || v.language.hasPrefix("en") {

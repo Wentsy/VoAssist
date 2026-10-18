@@ -134,6 +134,11 @@ public final class SystemVoice {
 
     public init() {}
 
+    /// True on a thread while it hands an utterance to the system synthesizer (`write`), and only then (see
+    /// `AnnouncementGuard` in the extension).
+    public static var isHandingOver: Bool { Thread.current.threadDictionary[handingOverKey] != nil }
+    private static let handingOverKey = "voassist.handingOver"
+
     private var synthesizer: AVSpeechSynthesizer {
         if let s = synth { return s }
         let s = AVSpeechSynthesizer()
@@ -201,6 +206,7 @@ public final class SystemVoice {
         #if LATENCY_PROBE
         LatencyTrace.mark("write")
         #endif
+        Thread.current.threadDictionary[SystemVoice.handingOverKey] = true
         synth.write(u) { buffer in
             guard let pcm = buffer as? AVAudioPCMBuffer else { return }
             if pcm.frameLength == 0 { // the end of one voice's stretch (or of everything)
@@ -210,6 +216,7 @@ public final class SystemVoice {
                 box.push(adapter.convert(pcm))
             }
         }
+        Thread.current.threadDictionary[SystemVoice.handingOverKey] = nil
         var reported = 0 // stretch ends passed on
         var voiced = 0    // the newest stretch whose sound was passed on
         var switchFrom: Date?
