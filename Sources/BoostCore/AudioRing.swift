@@ -57,12 +57,6 @@ public final class AudioRing {
 
     public init() {}
 
-    /// The samples handed over for request `g` so far (0 once a newer one began).
-    public func samplesSoFar(gen g: Int) -> Int {
-        cond.lock(); defer { cond.unlock() }
-        return gen == g ? playback.samples : 0
-    }
-
     /// The request before the current one, as the host played it.
     public func previousPlayback() -> Playback? {
         cond.lock(); defer { cond.unlock() }
@@ -127,17 +121,16 @@ public final class AudioRing {
 
     /// True once the player could start (or has started already: a short request can be played to its end before the
     /// waiting side looks again), or a newer request replaced generation `g`.
-    public func ready(gen g: Int, whole: Bool = false) -> Bool {
+    public func ready(gen g: Int) -> Bool {
         cond.lock(); defer { cond.unlock() }
-        return gen != g || begun || (whole ? done : canPlay)
+        return gen != g || begun || canPlay
     }
 
-    /// Waits (at most `timeout` seconds) until `ready` (`whole`: until the whole request is in). Not on the main thread:
-    /// the synthesis needs it.
-    public func waitForAudio(gen g: Int, timeout: TimeInterval, whole: Bool = false) {
+    /// Waits (at most `timeout` seconds) until `ready`. Not on the main thread: the synthesis needs it.
+    public func waitForAudio(gen g: Int, timeout: TimeInterval) {
         cond.lock(); defer { cond.unlock() }
         let deadline = Date(timeIntervalSinceNow: timeout)
-        while gen == g && !begun && !(whole ? done : canPlay) {
+        while gen == g && !begun && !canPlay {
             if !cond.wait(until: deadline) { break }
         }
     }

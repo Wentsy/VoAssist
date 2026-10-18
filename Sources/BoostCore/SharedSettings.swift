@@ -121,6 +121,27 @@ public struct BoostSettings: Codable, Equatable {
 
     public static func load() -> BoostSettings { SharedStore.read(BoostSettings.self, "settings.json") ?? BoostSettings() }
 
+    /// The settings as the extension reads them for every request and log line: re-read only when the file changes; no
+    /// file means the defaults; while the file cannot be read (after a restart, before the first unlock), the last ones
+    /// read, and the file is tried again next time (as `VoiceScheme.shared`).
+    public static func shared() -> BoostSettings {
+        let date = SharedStore.modificationDate("settings.json")
+        cacheLock.lock(); defer { cacheLock.unlock() }
+        if let c = cache, c.date == date { return c.settings }
+        let s: BoostSettings
+        if let read = SharedStore.read(BoostSettings.self, "settings.json") {
+            s = read
+        } else if SharedStore.exists("settings.json") {
+            return cache?.settings ?? BoostSettings()
+        } else {
+            s = BoostSettings()
+        }
+        cache = (date, s)
+        return s
+    }
+    private static let cacheLock = NSLock()
+    private static var cache: (date: Date?, settings: BoostSettings)?
+
     @discardableResult
     public static func save(_ s: BoostSettings) -> Bool { SharedStore.write(s, "settings.json") }
 }

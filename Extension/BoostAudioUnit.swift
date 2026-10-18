@@ -35,13 +35,26 @@ final class SynthWorker {
 
     private let cond = NSCondition()
     private var pending: Job?
-    private var warmEntries: [(entry: VoiceEntry, within: VoiceEntry?)] = [] // a secondary voice: inside its main one
-    private var warmed = Set<String>() // voices this process has already loaded (worker thread only)
+    /// The scheme in use: its voices are loaded while idle, in every synthesizer that may read them.
+    private var warmScheme: (main: VoiceEntry, secondary: VoiceEntry?)?
+    private var gaveUp = Set<String>() // warm-ups that failed for another reason than a request (worker thread only)
     private var stopping = false
-    private let voice = SystemVoice()
-    /// Before iOS 27 the secondary voice gets a synthesizer of its own (see `BoostSynthesis.runPerVoice`).
-    private let otherVoice = SystemVoice()
+    /// The synthesizers for the main voice and (before iOS 27, see `BoostSynthesis.runPerVoice`) for the secondary one,
+    /// the one in use first (worker thread only), all loaded while idle. One whose utterance was cut short goes on
+    /// working for a while (its didCancel came 260-345 ms after the stop on an iPad with iPadOS 26.7, for a long item),
+    /// and a new utterance on it waits for that: the next item sounded after 211-322 ms there, 11-20 ms on an idle one.
+    /// Fast swiping cuts nearly every item short, so a request goes to an idle one. A synthesizer made on the spot is no
+    /// help: loading it took as long (231-288 ms). Each loaded one costs ~4 MB.
+    private var mains = [SystemVoice(), SystemVoice(), SystemVoice()]
+    private var others = [SystemVoice(), SystemVoice()]
+    private var voice: SystemVoice { mains[0] }
+    private var otherVoice: SystemVoice { others[0] }
+    private let all: [SystemVoice] // for `wake` from the host's threads
     private let perVoice = BoostAudioUnit.beforeIOS27
+
+    init() {
+        all = mains + others
+    }
 
     func start() {
         let t = Thread { [self] in self.loop() }
@@ -56,14 +69,25 @@ final class SynthWorker {
 
     func submit(_ job: Job) {
         cond.lock(); pending = job; cond.signal(); cond.unlock()
+        for s in all { s.wake() } // the request being read notices at once that it was cut short
+    }
+
+    /// Puts an idle synthesizer first, one with `voice` loaded if there is one; with none idle, the one cut short first
+    /// (the first to be done).
+    private func idleFirst(_ pool: inout [SystemVoice], for voice: VoiceEntry?) {
+        guard pool[0].isBusy else { return }
+        let idle = pool.indices.filter { !pool[$0].isBusy }
+        func loaded(_ i: Int) -> Bool {
+            voice.flatMap { pool[i].resolve($0) }.map { pool[i].loadedVoices.contains($0.identifier) } ?? false
+        }
+        let pick = idle.first(where: loaded) ?? idle.first
+            ?? pool.indices.min { (pool[$0].stoppedAt ?? .distantPast) < (pool[$1].stoppedAt ?? .distantPast) } ?? 0
+        pool.insert(pool.remove(at: pick), at: 0)
     }
 
     /// Loads a scheme's voices in the background (a voice's first utterance is ~250 ms slower).
     func warm(_ main: VoiceEntry, secondary: VoiceEntry?) {
-        cond.lock()
-        warmEntries = [(main, nil)] + (secondary.map { [($0, main)] } ?? [])
-        cond.signal()
-        cond.unlock()
+        cond.lock(); warmScheme = (main, secondary); cond.signal(); cond.unlock()
     }
 
     /// A request is waiting: a warm-up gives way to it.
@@ -75,38 +99,63 @@ final class SynthWorker {
     private func loop() {
         while true {
             cond.lock()
-            while pending == nil && warmEntries.isEmpty && !stopping { cond.wait() }
+            while pending == nil && warmScheme == nil && !stopping { cond.wait() }
             if stopping { cond.unlock(); break }
             let job = pending
             pending = nil
-            // one voice at a time, so a request never waits for more than one warm-up
-            let warm = job == nil ? warmEntries.removeFirst() : nil
+            let scheme = job == nil ? warmScheme : nil
             cond.unlock()
             if let job = job {
                 run(job)
-                warmed.insert(job.scheme.main.id)
-                // VoiceOver may use any of our schemes: once one is in use, load its secondary voice while idle, unless
-                // the request had it read already
-                if let other = job.scheme.secondary, !warmed.contains(other.id) {
-                    if perVoice || voice.lastSwitchWaitsMs.isEmpty {
-                        cond.lock(); warmEntries.append((other, job.scheme.main)); cond.unlock()
-                    } else {
-                        warmed.insert(other.id)
-                    }
+                // VoiceOver may use any of our schemes: the one in use is loaded everywhere while idle
+                cond.lock(); warmScheme = (job.scheme.main, job.scheme.secondary); cond.unlock()
+            } else if let w = scheme {
+                // one voice in one synthesizer at a time, so a request never waits for more than one warm-up
+                if let next = nextWarmUp(main: w.main, secondary: w.secondary) {
+                    if !next.run() && !requestWaiting { gaveUp.insert(next.key) }
+                } else {
+                    cond.lock()
+                    if let c = warmScheme, c.main == w.main, c.secondary == w.secondary { warmScheme = nil }
+                    cond.unlock()
                 }
-            } else if let w = warm, !warmed.contains(w.entry.id) {
-                // a secondary voice: in its own synthesizer before iOS 27, else inside an utterance of the main one
-                let ok = perVoice && w.within != nil
-                    ? otherVoice.warmUp(w.entry, isCancelled: { self.requestWaiting })
-                    : voice.warmUp(w.entry, within: w.within, isCancelled: { self.requestWaiting })
-                if ok { warmed.insert(w.entry.id) }
             }
         }
+    }
+
+    private struct WarmUp {
+        let key: String
+        let run: () -> Bool
+    }
+
+    /// The next voice to load: the main voice, then the secondary one, in the synthesizers in use, then in the others.
+    /// A secondary voice is loaded in its own synthesizer before iOS 27, else inside an utterance of the main one.
+    private func nextWarmUp(main: VoiceEntry, secondary: VoiceEntry?) -> WarmUp? {
+        var list: [(SystemVoice, VoiceEntry, VoiceEntry?)] = []
+        for i in 0..<max(mains.count, perVoice ? others.count : 0) {
+            if i < mains.count { list.append((mains[i], main, nil)) }
+            guard let o = secondary else { continue }
+            if !perVoice { list.append((mains[i], o, main)) } else if i < others.count { list.append((others[i], o, nil)) }
+        }
+        for (s, entry, within) in list where !s.isBusy {
+            guard let id = s.resolve(entry)?.identifier, !s.loadedVoices.contains(id) else { continue }
+            let key = "\(ObjectIdentifier(s).hashValue) \(id)"
+            if gaveUp.contains(key) { continue }
+            let n = (mains.firstIndex { $0 === s }).map { "main \($0)" } ?? (others.firstIndex { $0 === s }).map { "other \($0)" } ?? "?"
+            return WarmUp(key: key) {
+                let t0 = Date()
+                let ok = s.warmUp(entry, within: within, isCancelled: { self.requestWaiting })
+                DiagnosticLog.write("warm-up of \(id) in synthesizer \(n): \(ok ? "done" : "gave way") in \(Int(Date().timeIntervalSince(t0) * 1000)) ms")
+                return ok
+            }
+        }
+        return nil
     }
 
     private func run(_ job: Job) {
         let ring = job.ring, gen = job.gen
         guard ring.generation == gen else { return } // superseded before it started
+        idleFirst(&mains, for: job.scheme.main)
+        if perVoice { idleFirst(&others, for: job.scheme.secondary) }
         let t0 = Date()
         #if LATENCY_PROBE
         LatencyTrace.mark("worker")
@@ -117,7 +166,7 @@ final class SynthWorker {
         // the voice the scheme asks for, and the one the extension really gets
         log.notice("VOASSIST-VOICE \(job.scheme.name, privacy: .public): main \(job.scheme.main.id, privacy: .public) -> \(self.voice.resolve(job.scheme.main)?.identifier ?? "nil", privacy: .public); secondary \(job.scheme.secondary?.id ?? "-", privacy: .public) -> \(job.scheme.secondary.flatMap { self.voice.resolve($0)?.identifier } ?? "-", privacy: .public)")
         #endif
-        let settings = BoostSettings.load()
+        let settings = BoostSettings.shared()
         #if LATENCY_PROBE
         LatencyTrace.mark("settings")
         #endif
@@ -164,11 +213,9 @@ public class BoostAudioUnit: AVSpeechSynthesisProviderAudioUnit {
     /// a request of its own, after a cancel, and went on to no second part with this extension ("点赞" without its count,
     /// "可按住 转文字" without "文本栏", no hint), while Apple's voices and eSpeak-NG-style providers read them all: the
     /// system synthesizer announced every utterance to VoiceOver, which then dropped the rest (`AnnouncementGuard`).
-    /// There the extension also behaves as eSpeak-NG's provider does: the whole request is ready before the request returns
-    /// (27-45 ms for a name, 136-184 ms for a long chat line on those phones; up to 3 s), and a pull with nothing to play
-    /// and nothing coming says "complete" with no frames (`AudioRing.completeWhenIdle`), where it used to hand over
-    /// silence, as if still speaking. The host pulls faster than real time there, and a pull waits a little for a late
-    /// block rather than leave a gap.
+    /// There a pull with nothing to play and nothing coming also says "complete" with no frames, as eSpeak-NG's provider
+    /// does (`AudioRing.completeWhenIdle`), and a pull waits a little for a late block rather than leave a gap (the host
+    /// may pull ahead of real time).
     static let beforeIOS27 = ProcessInfo.processInfo.operatingSystemVersion.majorVersion < 27
 
     private var outputBus: AUAudioUnitBus
@@ -312,15 +359,17 @@ public class BoostAudioUnit: AVSpeechSynthesisProviderAudioUnit {
         // that would be silence in front of the speech. The synthesizer reports on the main queue, so when the system
         // calls us on the main thread, its run loop has to keep turning while we wait.
         // Start with a little audio in hand (or the whole of a shorter utterance), so that the first blocks do not run dry
-        // while the speed-up is still catching up; more during a voice switch (AudioRing). Before iOS 27: the whole request.
-        let whole = BoostAudioUnit.beforeIOS27
-        let deadline = Date(timeIntervalSinceNow: whole ? 3 : 0.8)
+        // while the speed-up is still catching up; more during a voice switch (AudioRing).
+        // Not longer: the host's calls come one after another, so while this waits, its cancel and the next request
+        // wait too. (Builds 21-26 waited for the whole request before iOS 27: an iPad with iPadOS 26.7 got a long item
+        // after 520 ms instead of 24, and swiping on meanwhile waited for all of it; it never ran dry without the wait.)
+        let deadline = Date(timeIntervalSinceNow: 0.8)
         if Thread.isMainThread {
-            while !ring.ready(gen: gen, whole: whole) && Date() < deadline {
+            while !ring.ready(gen: gen) && Date() < deadline {
                 RunLoop.current.run(mode: .default, before: Date(timeIntervalSinceNow: 0.002))
             }
         } else {
-            ring.waitForAudio(gen: gen, timeout: deadline.timeIntervalSinceNow, whole: whole)
+            ring.waitForAudio(gen: gen, timeout: deadline.timeIntervalSinceNow)
         }
         #if LATENCY_PROBE
         LatencyTrace.mark("ready")

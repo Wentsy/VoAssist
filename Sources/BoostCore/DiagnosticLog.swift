@@ -24,7 +24,6 @@ public enum DiagnosticLog {
     static var previous: URL { directory.appendingPathComponent("log.old.txt") }
 
     private static let lock = NSLock()
-    private static var cached: (Date?, BoostSettings)?
     private static var introducedIn: ino_t = 0 // the file this process has said what it is in (a new one after clearing)
     private static let stampFormat: DateFormatter = {
         let f = DateFormatter()
@@ -33,22 +32,7 @@ public enum DiagnosticLog {
         return f
     }()
 
-    /// The shared settings, re-read when the file changes (not cached while it cannot be read, see `VoiceScheme.shared`).
-    private static func settings() -> BoostSettings {
-        let date = SharedStore.modificationDate("settings.json")
-        lock.lock(); defer { lock.unlock() }
-        if let c = cached, c.0 == date { return c.1 }
-        let s: BoostSettings
-        if let read = SharedStore.read(BoostSettings.self, "settings.json") {
-            s = read
-        } else if SharedStore.exists("settings.json") {
-            return cached?.1 ?? BoostSettings() // closed for now: the last settings read, and try again next time
-        } else {
-            s = BoostSettings()
-        }
-        cached = (date, s)
-        return s
-    }
+    private static func settings() -> BoostSettings { BoostSettings.shared() }
 
     public static var isOn: Bool { settings().isLogging() }
 

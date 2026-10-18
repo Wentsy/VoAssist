@@ -9,6 +9,7 @@ private final class ChunkBox {
     private var segment = 0
     private var finished = false
     private var abandoned = false
+    private var woken = false
     private(set) var lastNews = Date()
 
     func push(_ c: [Float]) {
@@ -38,11 +39,19 @@ private final class ChunkBox {
         abandoned = true
     }
 
+    /// Ends the current wait at once (a request came: the reader looks whether its utterance was cut short).
+    func wake() {
+        cond.lock(); defer { cond.unlock() }
+        woken = true
+        cond.signal()
+    }
+
     /// Waits up to `timeout` for news; returns the chunks so far, the stretches ended so far, whether `didFinish` came,
     /// and how long ago anything came.
     func take(timeout: TimeInterval) -> ([([Float], Int)], Int, Bool, TimeInterval) {
         cond.lock(); defer { cond.unlock() }
-        if chunks.isEmpty && !finished { _ = cond.wait(until: Date(timeIntervalSinceNow: timeout)) }
+        if chunks.isEmpty && !finished && !woken { _ = cond.wait(until: Date(timeIntervalSinceNow: timeout)) }
+        woken = false
         let c = chunks
         chunks.removeAll()
         return (c, segment, finished, Date().timeIntervalSince(lastNews))
@@ -58,8 +67,12 @@ private final class FinishRouter: NSObject, AVSpeechSynthesizerDelegate {
         lock.lock(); boxes[ObjectIdentifier(u)] = box; lock.unlock()
     }
 
+    /// Every utterance's end, finished or cancelled.
+    var onDone: (() -> Void)?
+
     private func done(_ u: AVSpeechUtterance) {
         lock.lock(); let box = boxes.removeValue(forKey: ObjectIdentifier(u)); lock.unlock()
+        onDone?() // first: the reader, told it is over, may hand this synthesizer the next utterance at once
         box?.finish()
     }
 
@@ -131,8 +144,36 @@ public final class SystemVoice {
     private var synth: AVSpeechSynthesizer?
     private let router = FinishRouter()
     private var cache: [String: AVSpeechSynthesisVoice] = [:]
+    private let lock = NSLock()
+    private var current: ChunkBox? // the utterance being read, for `wake`
+    private var inFlight = 0       // utterances handed over whose end has not been reported yet
 
-    public init() {}
+    public init() {
+        router.onDone = { [weak self] in self?.ended() }
+    }
+
+    private func ended() {
+        lock.lock(); inFlight = max(inFlight - 1, 0); lock.unlock()
+    }
+
+    /// When an utterance here was last cut short.
+    public private(set) var stoppedAt: Date?
+
+    /// Still working on an utterance: one cut short goes on for a while after the stop (its didCancel came 260-345 ms
+    /// later on an iPad with iPadOS 26.7), and the next utterance waits for it.
+    public var isBusy: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return inFlight > 0
+    }
+
+    /// The system voices this synthesizer has read an utterance with: loaded, their next one starts without the load.
+    public private(set) var loadedVoices = Set<String>()
+
+    /// Makes a reader waiting in `speak` look at once whether its utterance was cut short (from any thread).
+    public func wake() {
+        lock.lock(); let b = current; lock.unlock()
+        b?.wake()
+    }
 
     /// True on a thread while it hands an utterance to the system synthesizer (`write`), and only then (see
     /// `AnnouncementGuard` in the extension).
@@ -180,22 +221,24 @@ public final class SystemVoice {
         u.voice = voice
         u.rate = min(max(rate, AVSpeechUtteranceMinimumSpeechRate), AVSpeechUtteranceMaximumSpeechRate)
         u.pitchMultiplier = min(max(pitch, 0.5), 2)
-        return run(u, stretches: 1, stallTimeout: stallTimeout, isCancelled: isCancelled) { pcm, _ in onPCM(pcm) }
+        return run(u, voices: [voice.identifier], stretches: 1, stallTimeout: stallTimeout, isCancelled: isCancelled) { pcm, _ in onPCM(pcm) }
     }
 
     /// Synthesizes SSML with `voice` as the main voice; `onPCM` gets each chunk with the number of the voice stretch it
     /// belongs to (0, 1, ... as `<voice>` switches come), and an empty chunk with the next number as soon as a stretch
     /// ends (before the next voice has made a sound). `stretches` is how many there should be: a fallback for knowing
-    /// the end if `didFinish` never came. `.rejected` if the system voice does not take the SSML.
-    public func speak(ssml: String, voice: AVSpeechSynthesisVoice, stretches: Int, stallTimeout: TimeInterval = 4,
-                      isCancelled: () -> Bool, onPCM: ([Float], Int) -> Void) -> Outcome {
+    /// the end if `didFinish` never came. `.rejected` if the system voice does not take the SSML. `others`: the voices
+    /// the SSML switches to (`<voice name>`).
+    public func speak(ssml: String, voice: AVSpeechSynthesisVoice, others: [String] = [], stretches: Int,
+                      stallTimeout: TimeInterval = 4, isCancelled: () -> Bool, onPCM: ([Float], Int) -> Void) -> Outcome {
         guard let u = AVSpeechUtterance(ssmlRepresentation: ssml) else { return .rejected }
         u.voice = voice
-        return run(u, stretches: stretches, stallTimeout: stallTimeout, isCancelled: isCancelled, onPCM: onPCM)
+        return run(u, voices: [voice.identifier] + others, stretches: stretches, stallTimeout: stallTimeout,
+                   isCancelled: isCancelled, onPCM: onPCM)
     }
 
-    private func run(_ u: AVSpeechUtterance, stretches: Int, stallTimeout: TimeInterval, isCancelled: () -> Bool,
-                     onPCM: ([Float], Int) -> Void) -> Outcome {
+    private func run(_ u: AVSpeechUtterance, voices: [String], stretches: Int, stallTimeout: TimeInterval,
+                     isCancelled: () -> Bool, onPCM: ([Float], Int) -> Void) -> Outcome {
         u.volume = 1
         u.preUtteranceDelay = 0
         u.postUtteranceDelay = 0
@@ -203,6 +246,8 @@ public final class SystemVoice {
         let adapter = PCMAdapter(sampleRate: SystemVoice.sampleRate)
         let synth = synthesizer
         router.register(u, box)
+        lock.lock(); current = box; inFlight += 1; lock.unlock()
+        defer { lock.lock(); current = nil; lock.unlock() }
         #if LATENCY_PROBE
         LatencyTrace.mark("write")
         #endif
@@ -229,6 +274,7 @@ public final class SystemVoice {
         while true {
             let (chunks, ended, finished, quiet) = box.take(timeout: 0.01)
             for (c, seg) in chunks {
+                if isCancelled() { break }
                 while reported < seg { stretchEnded() }
                 if seg > voiced {
                     voiced = seg
@@ -238,22 +284,27 @@ public final class SystemVoice {
                 }
                 onPCM(c, seg)
             }
+            if isCancelled() {
+                box.abandon()
+                synth.stopSpeaking(at: .immediate) // returns at once; the synthesizer is busy a while longer (`isBusy`)
+                stoppedAt = Date()
+                return .cancelled
+            }
             while reported < ended { stretchEnded() }
             // didFinish is the end; should it never come, all the expected stretches and a quiet second are
             if finished || (ended >= stretches && quiet > 1) {
                 lastEnd = finished ? "didFinish" : "quiet (\(ended) stretches)"
+                loadedVoices.formUnion(voices)
+                if !finished { lock.lock(); inFlight = 0; lock.unlock() } // its end will not be reported
                 return .done
-            }
-            if isCancelled() {
-                box.abandon()
-                synth.stopSpeaking(at: .immediate)
-                return .cancelled
             }
             if quiet > stallTimeout {
                 box.abandon()
                 synth.stopSpeaking(at: .immediate)
                 // a synthesizer that went quiet may stay stuck (every later request would wait it out too): a new one next
                 self.synth = nil
+                loadedVoices = []
+                lock.lock(); inFlight = 0; lock.unlock()
                 return .timedOut
             }
         }
@@ -270,7 +321,7 @@ public final class SystemVoice {
         func word(_ lang: String) -> String { LanguageRuns.isChinese(lang) ? "好" : "a" }
         if let m = main, let mv = resolve(m), mv.identifier != v.identifier {
             let ssml = "<speak>\(word(m.lang))<voice name=\"\(v.identifier)\">\(word(entry.lang))</voice></speak>"
-            return speak(ssml: ssml, voice: mv, stretches: 2, stallTimeout: 2, isCancelled: isCancelled) { _, _ in } == .done
+            return speak(ssml: ssml, voice: mv, others: [v.identifier], stretches: 2, stallTimeout: 2, isCancelled: isCancelled) { _, _ in } == .done
         }
         return speak(word(entry.lang), voice: v, rate: 0.5, pitch: 1, stallTimeout: 2, isCancelled: isCancelled) { _ in } == .done
     }
@@ -318,7 +369,9 @@ public enum BoostSynthesis {
                 switchTo = 1
                 switching?(true)
             }
-            return voice.speak(ssml: p.ssml, voice: mainVoice, stretches: max(p.segments.count, 1), isCancelled: isCancelled) { pcm, seg in
+            let others = p.segments.contains(.other) ? scheme.secondary.map { [$0.id] } ?? [] : []
+            return voice.speak(ssml: p.ssml, voice: mainVoice, others: others, stretches: max(p.segments.count, 1),
+                               isCancelled: isCancelled) { pcm, seg in
                 // a voice switch: the stretch before comes out whole right away, with only the pause its punctuation
                 // asks for (the end of the last stretch is the end of the request: `finish` below)
                 while stretch < seg {
@@ -403,12 +456,12 @@ extension BoostSynthesis {
         let keepTrailing = segments.last.map { $0.explicitBreak && $0.silenceMs > 0 } ?? false
         let proc = SegmentProcessor(sampleRate: sr, stretch: scheme.boost, trimLeading: !keepLeading, trimTrailing: !keepTrailing)
         let otherGain = scheme.secondaryGain
-        var spoke = false
         for seg in segments {
             let text = scheme.prepared(seg.text, rules: rules)
             if LanguageRuns.speakable(text) {
                 let runs = otherVoice == nil ? [LanguageRun(text, .main)] : LanguageRuns.split(text, mainLanguage: scheme.main.lang)
                 for (i, run) in runs.enumerated() where !run.text.isEmpty {
+                    if isCancelled() { return .cancelled }
                     let other = run.voice == .other && otherVoice != nil
                     let words = runs.count > 1 ? LanguageRuns.lowercasingLoneCapital(run.text) : run.text
                     let outcome = (other ? otherSynth : mainSynth).speak(words, voice: other ? otherVoice! : mainVoice,
@@ -425,7 +478,6 @@ extension BoostSynthesis {
                         return .timedOut
                     case .done: break
                     }
-                    spoke = true
                     // where the voices change: the pause its punctuation asks for, else none (as `ApplePlan.switchCapMs`)
                     if i < runs.count - 1 {
                         let end = words.trimmingCharacters(in: .whitespaces).last
@@ -438,10 +490,8 @@ extension BoostSynthesis {
             if seg.silenceMs > 0 { emit(proc.push([Float](repeating: 0, count: sr * seg.silenceMs / 1000))) }
         }
         emit(proc.finish())
-        // two requests played back to back (an item's name, then its hint) apart a little, as in `run`
-        if spoke && !keepTrailing {
-            emit([Float](repeating: 0, count: Int(0.1 / max(speed * scheme.boost, 1) * Double(sr))))
-        }
+        // No gap after the last sound, unlike `run`: VoiceOver leaves ~50 ms between the parts of an item there, on top
+        // of the audio (iPadOS 26.7 iPad), so a name and its "按钮" are apart enough.
         return .ok
     }
 }
