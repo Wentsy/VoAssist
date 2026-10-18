@@ -52,6 +52,12 @@ public enum DiagnosticLog {
 
     public static var isOn: Bool { settings().isLogging() }
 
+    /// The user asked for what VoiceOver reads to be recorded too.
+    public static var recordsSpeech: Bool {
+        let s = settings()
+        return s.isLogging() && s.logSpeech
+    }
+
     /// What VoiceOver reads, for the log: the text itself if the user asked for it (cut short), else only its length.
     public static func speech(_ text: String) -> String {
         let s = settings()

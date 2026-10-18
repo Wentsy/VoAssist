@@ -137,6 +137,8 @@ final class SynthWorker {
         func voices(_ e: VoiceEntry?) -> String { e.map { "\($0.id) -> \(voice.resolve($0)?.identifier ?? "none")" } ?? "none" }
         let s = job.scheme
         let request = SSML.parse(job.ssml)
+        // VoiceOver's own SSML, when what it reads may be recorded: how it marks up a request (bookmarks, languages ...)
+        if DiagnosticLog.recordsSpeech { DiagnosticLog.write("request #\(job.gen) ssml: \(job.ssml.prefix(800))") }
         DiagnosticLog.write("request #\(job.gen) \"\(s.name)\": main \(voices(s.main)), secondary \(voices(s.secondary)); VoiceOver rate \(Int((request.rate * 100).rounded()))%, boost \(s.boost), numbers \(s.numbers.rawValue), rules \(s.useRules ? "on" : "off"); \(DiagnosticLog.speech(request.segments.map(\.text).joined(separator: " ")))")
         DiagnosticLog.write("request #\(job.gen) \(status): waited \(ms(job.submitted, t0)) ms to start, first audio after \(firstAudio.map { "\(ms(t0, $0)) ms" } ?? "none"), done in \(ms(t0, Date())) ms, end \(voice.lastEnd), voice switches \(voice.lastSwitchWaitsMs.map(String.init).joined(separator: "/")) ms")
     }
@@ -329,8 +331,10 @@ public class BoostAudioUnit: AVSpeechSynthesisProviderAudioUnit {
     private func sendMarkers(_ request: AVSpeechSynthesisProviderRequest, gen: Int) {
         let block = speechSynthesisOutputMetadataBlock
         let samples = ring.samplesSoFar(gen: gen)
-        let markers = block == nil ? [] : SpeechMarkers.markers(ssml: request.ssmlRepresentation, samples: samples)
-        DiagnosticLog.write("markers #\(gen): \(block == nil ? "the host set no marker block" : "\(markers.count) sent") for \(samples) samples")
+        let parts = block == nil ? [] : SpeechMarkers.parts(ssml: request.ssmlRepresentation, samples: samples)
+        let markers = SpeechMarkers.markers(parts)
+        let names = parts.compactMap(\.name)
+        DiagnosticLog.write("markers #\(gen): \(block == nil ? "the host set no marker block" : "\(markers.count) sent") for \(samples) samples\(names.isEmpty ? "" : ", bookmarks \(names.joined(separator: " "))")")
         if let block = block, !markers.isEmpty { block(markers, request) }
     }
 

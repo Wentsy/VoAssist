@@ -66,4 +66,16 @@ final class SpeechMarkersTests: XCTestCase {
         XCTAssertEqual(SpeechMarkers.markers(ssml: ssml, samples: 8000).last?.byteSampleOffset, 8000 * 6 / 9 * 4)
         XCTAssertEqual(SpeechMarkers.parts(ssml: "<speak><break time=\"500ms\"/></speak>", samples: 100), [])
     }
+
+    func testBookmarksWhereTheyStand() {
+        let ssml = #"<speak><s>点赞</s><mark name="a"/><s>按钮</s><mark name='end'/></speak>"#
+        let parts = SpeechMarkers.parts(ssml: ssml, samples: 4000)
+        let marks = parts.filter { $0.mark == .bookmark }
+        XCTAssertEqual(marks.map(\.name), ["a", "end"])
+        XCTAssertEqual(marks.map(\.sample), [2000, 4000])
+        // the bookmark comes before the sentence that starts where it stands
+        let i = parts.firstIndex { $0.name == "a" }!
+        XCTAssertEqual(parts[i + 1].mark, .sentence)
+        XCTAssertEqual(SpeechMarkers.parts(ssml: #"<speak><mark name="x"/></speak>"#, samples: 10).map(\.name), ["x"])
+    }
 }
