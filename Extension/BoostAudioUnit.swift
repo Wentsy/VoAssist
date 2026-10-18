@@ -29,6 +29,8 @@ final class SynthWorker {
         let gen: Int
         let ring: AudioRing
         var submitted = Date()
+        /// The voice VoiceOver asked for (for the diagnostic log).
+        var voice = ""
     }
 
     private let cond = NSCondition()
@@ -150,6 +152,7 @@ final class SynthWorker {
         let request = SSML.parse(job.ssml)
         // VoiceOver's own SSML, when what it reads may be recorded: how it marks up a request (bookmarks, languages ...)
         if DiagnosticLog.recordsSpeech { DiagnosticLog.write("request #\(job.gen) ssml: \(job.ssml.prefix(800))") }
+        DiagnosticLog.write("request #\(job.gen) for \(job.voice)")
         DiagnosticLog.write("request #\(job.gen) \"\(s.name)\": main \(voices(s.main)), secondary \(voices(s.secondary)); VoiceOver rate \(Int((request.rate * 100).rounded()))%, boost \(s.boost), numbers \(s.numbers.rawValue), rules \(s.useRules ? "on" : "off"); \(DiagnosticLog.speech(request.segments.map(\.text).joined(separator: " ")))")
         let how = perVoice ? "a synthesizer per voice" : "end \(voice.lastEnd), voice switches \(voice.lastSwitchWaitsMs.map(String.init).joined(separator: "/")) ms"
         DiagnosticLog.write("request #\(job.gen) \(status): waited \(ms(job.submitted, t0)) ms to start, first audio after \(firstAudio.map { "\(ms(t0, $0)) ms" } ?? "none"), done in \(ms(t0, Date())) ms, \(how)")
@@ -200,8 +203,8 @@ public class BoostAudioUnit: AVSpeechSynthesisProviderAudioUnit {
         get {
             traced("speechVoices") {
                 schemes.map {
-                    AVSpeechSynthesisProviderVoice(name: $0.name, identifier: $0.providerIdentifier,
-                                                   primaryLanguages: [$0.language], supportedLanguages: [$0.language])
+                    AVSpeechSynthesisProviderVoice(name: $0.name, identifier: $0.providerIdentifier, primaryLanguages: [$0.language],
+                                                   supportedLanguages: BoostAudioUnit.beforeIOS27 ? VoiceScheme.languageVariants($0.language) : [$0.language])
                 }
             }
         }
@@ -279,7 +282,8 @@ public class BoostAudioUnit: AVSpeechSynthesisProviderAudioUnit {
                     if n < frames { (dst + n).update(repeating: 0, count: frames - n) }
                     if finished {
                         actionFlags.pointee = .offlineUnitRenderAction_Complete
-                        delivered = n // the last block reports the frames it really holds
+                        // the last block reports the frames it really holds; before iOS 27 a full block, as Apple's sample
+                        if !legacy { delivered = n }
                     }
                 } else {
                     dst.update(repeating: 0, count: frames)
@@ -300,7 +304,8 @@ public class BoostAudioUnit: AVSpeechSynthesisProviderAudioUnit {
         #endif
         let gen = ring.reset() // also tells a still-running previous utterance to stop
         recordPreviousPlayback()
-        worker.submit(SynthWorker.Job(ssml: speechRequest.ssmlRepresentation, scheme: scheme(for: speechRequest.voice), gen: gen, ring: ring))
+        worker.submit(SynthWorker.Job(ssml: speechRequest.ssmlRepresentation, scheme: scheme(for: speechRequest.voice), gen: gen, ring: ring,
+                                      voice: "\(speechRequest.voice.identifier) \(speechRequest.voice.primaryLanguages)/\(speechRequest.voice.supportedLanguages)"))
         // Return once the first audio exists: the host starts pulling when this returns, and every block pulled before
         // that would be silence in front of the speech. The synthesizer reports on the main queue, so when the system
         // calls us on the main thread, its run loop has to keep turning while we wait.
