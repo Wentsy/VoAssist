@@ -50,3 +50,20 @@ final class SSMLTests: XCTestCase {
         XCTAssertFalse(VoiceEntry.isWrappable("com.sgr.grtts.voice.xunfei.zh-CN"))
     }
 }
+
+final class SpeechMarkersTests: XCTestCase {
+    func testPartsOfAVoiceOverRequest() {
+        let ssml = #"<speak><prosody rate="100%"><s><lang xml:lang="cmn-CN">可按住 转文字</lang></s><s><lang xml:lang="cmn-CN">文本栏</lang></s></prosody></speak>"#
+        let ns = ssml as NSString
+        let parts = SpeechMarkers.parts(ssml: ssml, samples: 8000)
+        XCTAssertEqual(parts.map(\.mark), [.paragraph, .sentence, .word, .word, .sentence, .word])
+        XCTAssertEqual(parts.map { ns.substring(with: $0.range) },
+                       [ns.substring(with: NSRange(location: ns.range(of: "可按住").location,
+                                                   length: NSMaxRange(ns.range(of: "文本栏")) - ns.range(of: "可按住").location)),
+                        "可按住 转文字", "可按住", "转文字", "文本栏", "文本栏"])
+        // 9 characters: the second word after 3, the second sentence after 6
+        XCTAssertEqual(parts.map(\.sample), [0, 0, 0, 8000 * 3 / 9, 8000 * 6 / 9, 8000 * 6 / 9])
+        XCTAssertEqual(SpeechMarkers.markers(ssml: ssml, samples: 8000).last?.byteSampleOffset, 8000 * 6 / 9 * 4)
+        XCTAssertEqual(SpeechMarkers.parts(ssml: "<speak><break time=\"500ms\"/></speak>", samples: 100), [])
+    }
+}

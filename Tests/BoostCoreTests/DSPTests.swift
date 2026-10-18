@@ -332,4 +332,21 @@ final class AudioRingTests: XCTestCase {
         XCTAssertEqual(p?.complete, true)
         XCTAssertEqual(p?.ranDry, 0)
     }
+
+    /// Before iOS 27: a wait for the whole request.
+    func testWaitForTheWholeRequest() {
+        let ring = AudioRing()
+        let g = ring.reset()
+        ring.append([Float](repeating: 0.5, count: 300), gen: g)
+        XCTAssertTrue(ring.ready(gen: g), "a block in hand")
+        XCTAssertFalse(ring.ready(gen: g, whole: true), "not the whole request yet")
+        XCTAssertEqual(ring.samplesSoFar(gen: g), 300)
+        DispatchQueue.global().asyncAfter(deadline: .now() + 0.05) { ring.finish(gen: g) }
+        let t0 = Date()
+        ring.waitForAudio(gen: g, timeout: 1, whole: true)
+        XCTAssertTrue(ring.ready(gen: g, whole: true))
+        XCTAssertLessThan(Date().timeIntervalSince(t0), 0.5)
+        ring.reset()
+        XCTAssertEqual(ring.samplesSoFar(gen: g), 0)
+    }
 }

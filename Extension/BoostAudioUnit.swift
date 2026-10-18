@@ -143,12 +143,15 @@ final class SynthWorker {
 }
 
 public class BoostAudioUnit: AVSpeechSynthesisProviderAudioUnit {
-    /// Before iOS 27 VoiceOver does not play the very start of what a third-party voice hands it, so at a high boost the
-    /// first word went missing ("按住 说话 按钮" read as "说话 按钮", "编辑框 可按住转文字" without "编辑框", a like count
-    /// before "点赞"), though the audio was all there (iOS 26.5 simulator; Apple's own voices start within 20 ms too, and
-    /// VoiceOver has skipped initial words since iOS 18.4, as users report). There each request starts with this much
-    /// silence, which also lets the request return at once instead of waiting for the slower first audio of those systems.
-    static let leadIn = ProcessInfo.processInfo.operatingSystemVersion.majorVersion < 27 ? SystemVoice.sampleRate * 200 / 1000 : 0
+    /// Before iOS 27 VoiceOver works another way, as a log from an iPhone 14 on iOS 26.7 shows: it sends each part of an
+    /// item as a request of its own, and only the first came ("点赞" without its count, "可按住 转文字" without "文本栏",
+    /// "微信" without "标签"), though the host pulled each one to its end and stopped at "complete"; and it pulls faster
+    /// than real time, which ran the stream dry twice in nearly every request (a gap each time). Apple: "the system may
+    /// delay speech output until it delivers these markers", and the extension sent none. So before iOS 27 the whole
+    /// request is ready before the request returns (27-45 ms for a name there, 136-184 ms for a long chat line; at most
+    /// 1 s, after which the rest streams), markers go to the host with it (`SpeechMarkers`), and a pull waits a little for
+    /// a late block rather than leave a gap.
+    static let beforeIOS27 = ProcessInfo.processInfo.operatingSystemVersion.majorVersion < 27
 
     private var outputBus: AUAudioUnitBus
     private var _outputBusses: AUAudioUnitBusArray!
@@ -242,6 +245,7 @@ public class BoostAudioUnit: AVSpeechSynthesisProviderAudioUnit {
 
     public override var internalRenderBlock: AUInternalRenderBlock {
         let ring = self.ring
+        let legacy = BoostAudioUnit.beforeIOS27
         return { actionFlags, _, frameCount, _, outputData, _, _ in
             let abl = UnsafeMutableAudioBufferListPointer(outputData)
             let frames = Int(frameCount)
@@ -251,7 +255,8 @@ public class BoostAudioUnit: AVSpeechSynthesisProviderAudioUnit {
                 if i == 0 {
                     // possibly a real-time thread: no real waiting (the synthesis runs ~150x faster than real time and the
                     // first audio is awaited in synthesizeSpeechRequest), only a few ms of slack for a late block
-                    let (n, finished) = ring.read(into: dst, count: frames, timeout: 0.003)
+                    // (before iOS 27 the host pulls ahead of real time: a late block is better than a gap)
+                    let (n, finished) = ring.read(into: dst, count: frames, timeout: legacy ? 0.02 : 0.003)
                     #if LATENCY_PROBE
                     if let line = LatencyTrace.sound(dst, n) {
                         DispatchQueue.global().async { log.notice("LATENCY-TRACE frames \(frames) | \(line, privacy: .public)") }
@@ -281,21 +286,22 @@ public class BoostAudioUnit: AVSpeechSynthesisProviderAudioUnit {
         #endif
         let gen = ring.reset() // also tells a still-running previous utterance to stop
         recordPreviousPlayback()
-        if BoostAudioUnit.leadIn > 0 { ring.append([Float](repeating: 0, count: BoostAudioUnit.leadIn), gen: gen) }
         worker.submit(SynthWorker.Job(ssml: speechRequest.ssmlRepresentation, scheme: scheme(for: speechRequest.voice), gen: gen, ring: ring))
         // Return once the first audio exists: the host starts pulling when this returns, and every block pulled before
         // that would be silence in front of the speech. The synthesizer reports on the main queue, so when the system
         // calls us on the main thread, its run loop has to keep turning while we wait.
         // Start with a little audio in hand (or the whole of a shorter utterance), so that the first blocks do not run dry
-        // while the speed-up is still catching up; more during a voice switch (AudioRing).
-        let deadline = Date(timeIntervalSinceNow: 0.8)
+        // while the speed-up is still catching up; more during a voice switch (AudioRing). Before iOS 27: the whole request.
+        let whole = BoostAudioUnit.beforeIOS27
+        let deadline = Date(timeIntervalSinceNow: whole ? 1 : 0.8)
         if Thread.isMainThread {
-            while !ring.ready(gen: gen) && Date() < deadline {
+            while !ring.ready(gen: gen, whole: whole) && Date() < deadline {
                 RunLoop.current.run(mode: .default, before: Date(timeIntervalSinceNow: 0.002))
             }
         } else {
-            ring.waitForAudio(gen: gen, timeout: deadline.timeIntervalSinceNow)
+            ring.waitForAudio(gen: gen, timeout: deadline.timeIntervalSinceNow, whole: whole)
         }
+        if whole { sendMarkers(speechRequest, gen: gen) }
         #if LATENCY_PROBE
         LatencyTrace.mark("ready")
         #endif
@@ -319,10 +325,19 @@ public class BoostAudioUnit: AVSpeechSynthesisProviderAudioUnit {
         }
     }
 
+    /// The markers of a request ready in full (see `beforeIOS27`), and in the diagnostic log whether the host asked for any.
+    private func sendMarkers(_ request: AVSpeechSynthesisProviderRequest, gen: Int) {
+        let block = speechSynthesisOutputMetadataBlock
+        let samples = ring.samplesSoFar(gen: gen)
+        let markers = block == nil ? [] : SpeechMarkers.markers(ssml: request.ssmlRepresentation, samples: samples)
+        DiagnosticLog.write("markers #\(gen): \(block == nil ? "the host set no marker block" : "\(markers.count) sent") for \(samples) samples")
+        if let block = block, !markers.isEmpty { block(markers, request) }
+    }
+
     /// How the host played the request before (over once the next one comes, or it is cancelled), for the diagnostic log.
     private func recordPreviousPlayback() {
         guard DiagnosticLog.isOn, let p = ring.previousPlayback(), p.gen > 0, p.pulls > 0 || p.samples > 0 else { return }
-        DiagnosticLog.write("playback #\(p.gen): first pull after \(p.firstPullAfterMs.map { "\($0) ms" } ?? "never"), \(p.pulls) pulls of \(p.minFrames)-\(p.maxFrames) frames (\(p.pullsBeforeAudio) before any audio), first audio out after \(p.startedAfterMs.map { "\($0) ms" } ?? "never")\(BoostAudioUnit.leadIn > 0 ? " (\(BoostAudioUnit.leadIn * 1000 / SystemVoice.sampleRate) ms of it silence)" : ""), ran dry \(p.ranDry) times, \(p.samples) samples, \(p.complete ? "complete" : "not complete")")
+        DiagnosticLog.write("playback #\(p.gen): first pull after \(p.firstPullAfterMs.map { "\($0) ms" } ?? "never"), \(p.pulls) pulls of \(p.minFrames)-\(p.maxFrames) frames (\(p.pullsBeforeAudio) before any audio), first audio out after \(p.startedAfterMs.map { "\($0) ms" } ?? "never"), ran dry \(p.ranDry) times, \(p.samples) samples, \(p.complete ? "complete" : "not complete")")
     }
 }
 
