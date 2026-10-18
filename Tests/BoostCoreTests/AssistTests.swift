@@ -432,14 +432,3 @@ final class DiagnosticLogTests: XCTestCase {
     }
 }
 
-final class LanguageVariantTests: XCTestCase {
-    func testVariantsVoiceOverMayUse() {
-        XCTAssertEqual(VoiceScheme.languageVariants("zh-CN").first, "zh-CN")
-        XCTAssertTrue(VoiceScheme.languageVariants("zh-CN").contains("cmn"))
-        XCTAssertTrue(VoiceScheme.languageVariants("zh-CN").contains("zh-Hans"))
-        XCTAssertEqual(VoiceScheme.languageVariants("yue-HK").filter { $0 == "yue-HK" }.count, 1, "no duplicates")
-        XCTAssertTrue(VoiceScheme.languageVariants("zh-TW").contains("zh-Hant"))
-        XCTAssertEqual(VoiceScheme.languageVariants("en-US"), ["en-US", "en"])
-        XCTAssertEqual(VoiceScheme.languageVariants("ja"), ["ja"])
-    }
-}

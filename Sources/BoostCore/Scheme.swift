@@ -54,24 +54,6 @@ public struct VoiceScheme: Codable, Identifiable, Equatable, Hashable {
     /// The language list the scheme appears in.
     public var language: String { main.lang }
 
-    /// The ways of writing `lang` that VoiceOver may tag text with before iOS 27: "cmn" for what it detects in an item's
-    /// own text (from its SSML there), perhaps "zh-Hans" or "cmn-CN" for its own words (the trait, the hint, which never
-    /// reached the extension there while Apple's voices and other third-party ones read them). Declared as supported
-    /// there (`BoostAudioUnit.speechVoices`), so that VoiceOver hands those to the scheme too.
-    public static func languageVariants(_ lang: String) -> [String] {
-        var all: [String]
-        switch lang {
-        case "zh-CN": all = ["zh-CN", "zh-Hans", "zh-Hans-CN", "zh", "cmn", "cmn-CN", "cmn-Hans", "cmn-Hans-CN"]
-        case "zh-TW": all = ["zh-TW", "zh-Hant", "zh-Hant-TW", "cmn-TW", "cmn-Hant", "cmn-Hant-TW"]
-        case "yue-HK", "zh-HK": all = [lang, "yue-HK", "zh-HK", "yue", "yue-Hant", "yue-Hant-HK", "zh-Hant-HK"]
-        default:
-            let base = String(lang.prefix { $0 != "-" })
-            all = [lang, base]
-        }
-        var seen = Set<String>()
-        return all.filter { seen.insert($0).inserted }
-    }
-
     /// Whether the secondary voice reads Latin text (a Chinese main voice) or Chinese characters (any other).
     public static func secondaryReadsEnglish(main lang: String) -> Bool { LanguageRuns.isChinese(lang) }
 

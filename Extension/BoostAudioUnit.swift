@@ -203,8 +203,8 @@ public class BoostAudioUnit: AVSpeechSynthesisProviderAudioUnit {
         get {
             traced("speechVoices") {
                 schemes.map {
-                    AVSpeechSynthesisProviderVoice(name: $0.name, identifier: $0.providerIdentifier, primaryLanguages: [$0.language],
-                                                   supportedLanguages: BoostAudioUnit.beforeIOS27 ? VoiceScheme.languageVariants($0.language) : [$0.language])
+                    AVSpeechSynthesisProviderVoice(name: $0.name, identifier: $0.providerIdentifier,
+                                                   primaryLanguages: [$0.language], supportedLanguages: [$0.language])
                 }
             }
         }
