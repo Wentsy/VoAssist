@@ -137,6 +137,7 @@ struct ContentView: View {
             }
             if args.contains("-autotest") { AutoTest.run(model) }
             if args.contains("-ssmlTest") { SSMLTest.run() }
+            if args.contains("-switchTest") { SwitchTest.run() }
             if args.contains("-latency") { LatencyProbe.run() }
             // development: the Chinese and English voices the app sees (the voice extension sees fewer)
             if args.contains("-listVoices") {
@@ -241,6 +242,7 @@ enum SSMLTest {
                 ("已选定|微信|标签", ["已选定", "微信", "标签"]), ("已选定|标签", ["已选定", "标签"]),
                 ("编辑框|可按住转文字", ["编辑框", "可按住转文字"]), ("可按住转文字", ["可按住转文字"]),
                 ("1.2万|点赞", ["1.2万", "点赞"]), ("点赞", ["点赞"]),
+                ("打开 Safari 浏览器", ["打开 Safari 浏览器"]), ("App Store|按钮", ["App Store", "按钮"]),
             ]
             let voice = SystemVoice()
             let scheme = VoiceScheme.defaultTingting
@@ -251,14 +253,54 @@ enum SSMLTest {
                 var ours = 0
                 _ = BoostSynthesis.run(ssml: ssml, scheme: scheme, settings: BoostSettings(), rules: RuleBook([]), voice: voice,
                                        isCancelled: { false }) { ours += $0.count }
+                var perVoice = 0
+                let other = SystemVoice()
+                _ = BoostSynthesis.runPerVoice(ssml: ssml, scheme: scheme, settings: BoostSettings(), rules: RuleBook([]), main: voice,
+                                               other: other, isCancelled: { false }) { perVoice += $0.count }
                 var apple: [Float] = []
                 _ = voice.speak(ssml: ssml, voice: tingting, stretches: 1, isCancelled: { false }) { pcm, _ in apple += pcm }
                 let lead = apple.firstIndex { abs($0) > 0.01 } ?? apple.count
                 func ms(_ n: Int) -> Double { Double(n) / Double(SystemVoice.sampleRate) * 1000 }
-                print(String(format: "SSMLTEST %@: ours %.0f ms, system voice alone %.0f ms (leading silence %.0f ms)", name,
-                             ms(ours), ms(apple.count), ms(lead)))
+                print(String(format: "SSMLTEST %@: ours %.0f ms, per voice %.0f ms, system voice alone %.0f ms (leading silence %.0f ms)", name,
+                             ms(ours), ms(perVoice), ms(apple.count), ms(lead)))
             }
             print("SSMLTEST done")
+            DispatchQueue.main.async { devRunEnded() }
+        }.start()
+    }
+}
+
+/// `-switchTest` launch argument (development): how long the first audio takes when items alternate between the main
+/// and the secondary voice, with one synthesizer for both (as now) and with one per voice.
+enum SwitchTest {
+    static func run() {
+        Thread {
+            let main = VoiceEntry.tingting, other = VoiceEntry.samantha
+            let items: [(String, Bool)] = [("打开", false), ("App Store", true), ("设置", false), ("Test Flight", true), ("相机", false),
+                                           ("QQ", true), ("微信", false), ("Goodnotes", true), ("隐藏边栏", false), ("iPad", true)]
+            func firstAudio(_ v: SystemVoice, _ e: VoiceEntry, _ text: String) -> Int {
+                guard let voice = v.resolve(e) else { return -1 }
+                let t0 = Date()
+                var first = -1
+                _ = v.speak(text, voice: voice, rate: 0.5, pitch: 1, isCancelled: { false }) { pcm in
+                    if first < 0 && !pcm.isEmpty { first = Int(Date().timeIntervalSince(t0) * 1000) }
+                }
+                return first
+            }
+            let one = SystemVoice()
+            one.warmUp(main); one.warmUp(other)
+            let a = SystemVoice(), b = SystemVoice()
+            a.warmUp(main); b.warmUp(other)
+            for round in 0..<2 {
+                var shared: [String] = [], separate: [String] = []
+                for (text, english) in items {
+                    shared.append("\(text) \(firstAudio(one, english ? other : main, text))")
+                    separate.append("\(text) \(firstAudio(english ? b : a, english ? other : main, text))")
+                }
+                print("SWITCHTEST round \(round) one synthesizer: " + shared.joined(separator: ", "))
+                print("SWITCHTEST round \(round) one per voice:   " + separate.joined(separator: ", "))
+            }
+            print("SWITCHTEST done")
             DispatchQueue.main.async { devRunEnded() }
         }.start()
     }

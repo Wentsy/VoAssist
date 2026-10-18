@@ -372,6 +372,73 @@ public enum BoostSynthesis {
     }
 }
 
+extension BoostSynthesis {
+    /// Before iOS 27 a synthesizer that changes voices pays for it every time, between utterances as well as inside one:
+    /// 20-65 ms per utterance on the iOS 26.5 simulator, against 1-2 ms with a synthesizer per voice (`-switchTest`), and
+    /// 200-950 ms per request with a Latin word in a log from an iPad on iPadOS 26.7 (iOS 27: 1-2 ms either way). So there
+    /// a request is read stretch by stretch, each language's stretches by a synthesizer of its own (`main`, `other`), as
+    /// plain utterances. VoiceOver's requests there are short and simple (a name; at times a break and a second part;
+    /// `<prosody volume pitch>`, no rate: the system speeds the audio up itself), so `SSML.parse` has all of it.
+    public static func runPerVoice(ssml: String, scheme: VoiceScheme, settings s: BoostSettings, rules: RuleBook,
+                                   main mainSynth: SystemVoice, other otherSynth: SystemVoice,
+                                   isCancelled: () -> Bool, emit: ([Float]) -> Void) -> Status {
+        let sr = SystemVoice.sampleRate
+        let map = s.effectiveRateMap
+        guard let mainVoice = mainSynth.resolve(scheme.main) else { return .noVoice }
+        let otherVoice = scheme.secondary.flatMap { otherSynth.resolve($0) }
+        let request = SSML.parse(ssml)
+        let speed = min(max(request.rate, 0.1), map.maxMultiplier)
+        let mainRate = map.rate(for: speed)
+        let otherRate = map.rate(for: min(speed * scheme.secondaryRate, map.maxMultiplier))
+        let segments = request.segments
+        // a request that starts or ends with VoiceOver's own break keeps that silence (as `ApplePlan.keepLeading`)
+        let keepLeading = segments.first.map { $0.text.isEmpty && $0.silenceMs > 0 } ?? false
+        let keepTrailing = segments.last.map { $0.explicitBreak && $0.silenceMs > 0 } ?? false
+        let proc = SegmentProcessor(sampleRate: sr, stretch: scheme.boost, trimLeading: !keepLeading, trimTrailing: !keepTrailing)
+        let otherGain = scheme.secondaryGain
+        var spoke = false
+        for seg in segments {
+            let text = scheme.prepared(seg.text, rules: rules)
+            if LanguageRuns.speakable(text) {
+                let runs = otherVoice == nil ? [LanguageRun(text, .main)] : LanguageRuns.split(text, mainLanguage: scheme.main.lang)
+                for (i, run) in runs.enumerated() where !run.text.isEmpty {
+                    let other = run.voice == .other && otherVoice != nil
+                    let words = runs.count > 1 ? LanguageRuns.lowercasingLoneCapital(run.text) : run.text
+                    let outcome = (other ? otherSynth : mainSynth).speak(words, voice: other ? otherVoice! : mainVoice,
+                                                                          rate: other ? otherRate : mainRate, pitch: request.pitch,
+                                                                          isCancelled: isCancelled) { pcm in
+                        var x = pcm
+                        if other && otherGain != 1 { applyGain(&x, otherGain) }
+                        emit(proc.push(x))
+                    }
+                    switch outcome {
+                    case .cancelled: return .cancelled
+                    case .timedOut, .rejected:
+                        emit(proc.finish())
+                        return .timedOut
+                    case .done: break
+                    }
+                    spoke = true
+                    // where the voices change: the pause its punctuation asks for, else none (as `ApplePlan.switchCapMs`)
+                    if i < runs.count - 1 {
+                        let end = words.trimmingCharacters(in: .whitespaces).last
+                        let pause = end.map { "，。！？、；：,.!?;:…".contains($0) } == true
+                        emit(proc.endStretch(capMs: pause ? nil : ApplePlanner.switchPauseMs))
+                    }
+                }
+            }
+            // VoiceOver's break: silence, sped up with the rest
+            if seg.silenceMs > 0 { emit(proc.push([Float](repeating: 0, count: sr * seg.silenceMs / 1000))) }
+        }
+        emit(proc.finish())
+        // two requests played back to back (an item's name, then its hint) apart a little, as in `run`
+        if spoke && !keepTrailing {
+            emit([Float](repeating: 0, count: Int(0.1 / max(speed * scheme.boost, 1) * Double(sr))))
+        }
+        return .ok
+    }
+}
+
 /// How loud a voice speaks, to match a secondary voice to the main one.
 public enum Loudness {
     /// Mean power (dBFS) of the 20 ms frames above a -50 dBFS gate: the speech, not the pauses.

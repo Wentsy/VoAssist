@@ -37,6 +37,9 @@ final class SynthWorker {
     private var warmed = Set<String>() // voices this process has already loaded (worker thread only)
     private var stopping = false
     private let voice = SystemVoice()
+    /// Before iOS 27 the secondary voice gets a synthesizer of its own (see `BoostSynthesis.runPerVoice`).
+    private let otherVoice = SystemVoice()
+    private let perVoice = BoostAudioUnit.beforeIOS27
 
     func start() {
         let t = Thread { [self] in self.loop() }
@@ -83,14 +86,18 @@ final class SynthWorker {
                 // VoiceOver may use any of our schemes: once one is in use, load its secondary voice while idle, unless
                 // the request had it read already
                 if let other = job.scheme.secondary, !warmed.contains(other.id) {
-                    if voice.lastSwitchWaitsMs.isEmpty {
+                    if perVoice || voice.lastSwitchWaitsMs.isEmpty {
                         cond.lock(); warmEntries.append((other, job.scheme.main)); cond.unlock()
                     } else {
                         warmed.insert(other.id)
                     }
                 }
             } else if let w = warm, !warmed.contains(w.entry.id) {
-                if voice.warmUp(w.entry, within: w.within, isCancelled: { self.requestWaiting }) { warmed.insert(w.entry.id) }
+                // a secondary voice: in its own synthesizer before iOS 27, else inside an utterance of the main one
+                let ok = perVoice && w.within != nil
+                    ? otherVoice.warmUp(w.entry, isCancelled: { self.requestWaiting })
+                    : voice.warmUp(w.entry, within: w.within, isCancelled: { self.requestWaiting })
+                if ok { warmed.insert(w.entry.id) }
             }
         }
     }
@@ -113,15 +120,19 @@ final class SynthWorker {
         LatencyTrace.mark("settings")
         #endif
         var firstAudio: Date?
-        let status = BoostSynthesis.run(ssml: job.ssml, scheme: job.scheme, settings: settings, rules: RuleBook.shared(),
-                                        voice: voice, isCancelled: { ring.generation != gen },
-                                        switching: { ring.setSwitching($0, gen: gen) }) { pcm in
+        let out: ([Float]) -> Void = { pcm in
             #if LATENCY_PROBE
             if !pcm.isEmpty { LatencyTrace.mark("first output") }
             #endif
             if firstAudio == nil && !pcm.isEmpty { firstAudio = Date() }
             ring.append(pcm, gen: gen)
         }
+        let status = perVoice
+            ? BoostSynthesis.runPerVoice(ssml: job.ssml, scheme: job.scheme, settings: settings, rules: RuleBook.shared(),
+                                         main: voice, other: otherVoice, isCancelled: { ring.generation != gen }, emit: out)
+            : BoostSynthesis.run(ssml: job.ssml, scheme: job.scheme, settings: settings, rules: RuleBook.shared(),
+                                 voice: voice, isCancelled: { ring.generation != gen },
+                                 switching: { ring.setSwitching($0, gen: gen) }, emit: out)
         if status != .ok && status != .cancelled {
             log.error("request failed: \(String(describing: status), privacy: .public) voice \(job.scheme.main.id, privacy: .public)")
         }
@@ -140,7 +151,8 @@ final class SynthWorker {
         // VoiceOver's own SSML, when what it reads may be recorded: how it marks up a request (bookmarks, languages ...)
         if DiagnosticLog.recordsSpeech { DiagnosticLog.write("request #\(job.gen) ssml: \(job.ssml.prefix(800))") }
         DiagnosticLog.write("request #\(job.gen) \"\(s.name)\": main \(voices(s.main)), secondary \(voices(s.secondary)); VoiceOver rate \(Int((request.rate * 100).rounded()))%, boost \(s.boost), numbers \(s.numbers.rawValue), rules \(s.useRules ? "on" : "off"); \(DiagnosticLog.speech(request.segments.map(\.text).joined(separator: " ")))")
-        DiagnosticLog.write("request #\(job.gen) \(status): waited \(ms(job.submitted, t0)) ms to start, first audio after \(firstAudio.map { "\(ms(t0, $0)) ms" } ?? "none"), done in \(ms(t0, Date())) ms, end \(voice.lastEnd), voice switches \(voice.lastSwitchWaitsMs.map(String.init).joined(separator: "/")) ms")
+        let how = perVoice ? "a synthesizer per voice" : "end \(voice.lastEnd), voice switches \(voice.lastSwitchWaitsMs.map(String.init).joined(separator: "/")) ms"
+        DiagnosticLog.write("request #\(job.gen) \(status): waited \(ms(job.submitted, t0)) ms to start, first audio after \(firstAudio.map { "\(ms(t0, $0)) ms" } ?? "none"), done in \(ms(t0, Date())) ms, \(how)")
     }
 }
 
