@@ -14,9 +14,8 @@ public struct ApplePlan: Equatable {
     /// The voices in the order the system voice reads them. It ends every stretch of one voice with an empty buffer
     /// (breaks and sentences do not), so the n-th stretch of audio belongs to `segments[n]`.
     public var segments: [RunVoice]
-    /// Pause kept where segment i ends and i+1 begins (the system voice leaves its whole end-of-utterance silence there,
-    /// ~190 ms at the normal rate): nil = keep it (the text before ends in punctuation), else the pause in ms:
-    /// `ApplePlanner.switchPauseMs` at the main voice's speed (see `Trimmer.endStretch`).
+    /// The pause where segment i ends and i+1 begins: nil = as the system voice makes it (VoiceOver's own pause there, a
+    /// break or a new sentence), else in ms (`ApplePlanner.switchPause`, see `Trimmer.endStretch`).
     public var switchCapMs: [Int?]
     /// The request starts / ends with a `<break>`: that silence is VoiceOver's and must not be trimmed.
     public var keepLeading: Bool
@@ -33,6 +32,25 @@ public enum ApplePlanner {
     /// build 3's ~30 ms felt like a break; none with the soft ends cut away (build 4) very odd. Not a user
     /// setting; `render-samples --switch-pause` tries others.
     public static var switchPauseMs = 0
+
+    /// The pause where the voices switch after a punctuation mark, in ms at the normal speed: the main voice's own pause
+    /// there. Each voice ends its piece as an utterance, which keeps almost none of it (28-44 ms where Tingting reading
+    /// on makes 184-308 ms), and Samantha makes none at Chinese marks at all. Measured with Tingting between two words
+    /// on an iPad (iPadOS 26.7, `-joinTest`): 308 ms for ，、；：,;: and 240 ms for 。！？….!?.
+    static let clausePauseMs = 300, sentencePauseMs = 240
+    static let clauseMarks: Set<Character> = ["，", "、", "；", "：", ",", ";", ":"]
+    static let sentenceMarks: Set<Character> = ["。", "！", "？", "…", ".", "!", "?"]
+
+    /// The pause (ms) where the voices switch after `text`, read at `speed` (shorter as the voice speaks faster, like
+    /// its own pauses): a punctuation mark's (`clausePauseMs`, `sentencePauseMs`), else `switchPauseMs`. A stretch that
+    /// is only a symbol read out (the dot of "Node.js") is no full stop.
+    public static func switchPause(after text: String, speed: Double) -> Int {
+        var ms = switchPauseMs
+        if text.contains(where: { $0.isLetter || $0.isNumber }), let end = text.trimmingCharacters(in: .whitespaces).last {
+            if clauseMarks.contains(end) { ms = clausePauseMs } else if sentenceMarks.contains(end) { ms = sentencePauseMs }
+        }
+        return Int((Double(ms) / max(speed, 0.1)).rounded())
+    }
 
     /// `ssml` is VoiceOver's request (or our own for a preview).
     public static func plan(_ ssml: String, scheme: VoiceScheme, rules: RuleBook, map: RateMap) -> ApplePlan {
@@ -107,7 +125,9 @@ public enum ApplePlanner {
             for p in pieces where !p.text.isEmpty {
                 // a capital letter the split left on its own ("C 语言"): read as the letter, not "capital C" / "大写C"
                 // (a request that is nothing but the letter, VoiceOver moving by character, stays as it is)
-                let text = pieces.count > 1 ? LanguageRuns.lowercasingLoneCapital(p.text) : p.text
+                var text = pieces.count > 1 ? LanguageRuns.lowercasingLoneCapital(p.text) : p.text
+                let reader = p.voice == .other ? scheme.secondary?.lang : scheme.main.lang
+                if let lang = reader, !LanguageRuns.isChinese(lang) { text = LanguageRuns.westernPunctuation(text) }
                 runs.append((p.voice, text, pauseAhead && !runs.isEmpty))
                 pauseAhead = false
                 if p.voice == .other, let id = secondaryID {
@@ -132,15 +152,9 @@ public enum ApplePlanner {
             if let last = segs.last, last.voice == r.voice { segs[segs.count - 1].text += r.text } else { segs.append(r) }
         }
         let mainSpeed = speed ?? 1
-        let pause = Int((Double(switchPauseMs) / max(mainSpeed, 0.1)).rounded())
         let caps: [Int?] = segs.indices.dropLast().map { i in
             // VoiceOver's own pause (a break, a new sentence) where the voices switch: kept as the system voice makes it
-            if segs[i + 1].pauseBefore { return nil }
-            let seg = segs[i].text
-            // a stretch that is only a symbol read out (the dot of "Node.js") is no full stop
-            guard seg.contains(where: { $0.isLetter || $0.isNumber }) else { return pause }
-            let end = seg.trimmingCharacters(in: .whitespaces).last
-            return end.map { "，。！？、；：,.!?;:…".contains($0) } == true ? nil : pause
+            segs[i + 1].pauseBefore ? nil : switchPause(after: segs[i].text, speed: mainSpeed)
         }
         let hasText = runs.contains { $0.text.contains { $0.isLetter || $0.isNumber } }
         return ApplePlan(ssml: out, segments: segs.map(\.voice), switchCapMs: caps,

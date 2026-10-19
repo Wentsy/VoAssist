@@ -4,11 +4,13 @@ import AVFoundation
 /// whole, no player involved). Each line as VoiceOver before iOS 27 sends it, read a synthesizer per voice (as there),
 /// with one synthesizer switching voices inside the SSML (as on iOS 27), and by Tingting alone (her own gaps between
 /// words, for comparison); at boost 1 and 4.5. Prints every stretch under -40 dBFS of 8 ms or more inside the speech.
+/// Then how the system voice splits an SSML that switches voices into stretches, and the pause Tingting and Samantha
+/// each make at every punctuation mark (`ApplePlanner.switchPause` comes from these).
 enum JoinTest {
     static func run() {
         Thread {
             let lines = ["打开Safari浏览器", "Wi-Fi 设置", "听见时光beta版", "微信 WeChat 登录", "App Store 有更新", "轻点两下以打开 Safari 浏览器",
-                         "设置，Safari", "你好，World", "Hello，世界", "下载完成。App Store", "已连接到 Wi-Fi，信号很好"]
+                         "设置，Safari", "你好，World", "Hello，世界", "下载完成。App Store", "已连接到 Wi-Fi，信号很好", "Hello，World"]
             let main = SystemVoice(), other = SystemVoice(), both = SystemVoice()
             guard let tingting = main.resolve(.tingting) else { print("JT no voice"); return }
             main.warmUp(.tingting); other.warmUp(.samantha); both.warmUp(.samantha, within: .tingting)
@@ -33,9 +35,46 @@ enum JoinTest {
                     print("JT   婷婷 alone \(describe(alone))")
                 }
             }
+            // how the system voice splits an SSML that switches voices into stretches (an empty buffer ends each)
+            if let samantha = both.resolve(.samantha) {
+                for ssml in ["<speak><voice name=\"\(samantha.identifier)\">Hello, </voice>世界</speak>",
+                             "<speak>你好，<voice name=\"\(samantha.identifier)\">World</voice></speak>"] {
+                    var sizes: [Int: Int] = [:]
+                    var ends: [Int] = []
+                    _ = both.speak(ssml: ssml, voice: tingting, stretches: 2, isCancelled: { false }) { pcm, seg in
+                        if pcm.isEmpty { ends.append(seg) } else { sizes[seg, default: 0] += pcm.count }
+                    }
+                    print("JT stretches \(ssml.count > 60 ? String(ssml.suffix(40)) : ssml): samples per stretch \(sizes.sorted { $0.key < $1.key }), ends \(ends)")
+                }
+            }
+            // the pause each voice makes at a punctuation mark between two words, at the normal rate
+            for p in ["，", "、", "。", "；", "：", "！", "？", "…", ",", ".", ";", ":", "!", "?"] {
+                var zh: [Float] = [], en: [Float] = []
+                _ = main.speak("前面\(p)后面", voice: tingting, rate: 0.5, pitch: 1, isCancelled: { false }) { zh += $0 }
+                if let samantha = other.resolve(.samantha) {
+                    _ = other.speak("first\(p) second", voice: samantha, rate: 0.5, pitch: 1, isCancelled: { false }) { en += $0 }
+                }
+                print("JT pause \(p): 婷婷 \(longestQuiet(zh)) ms, Samantha \(longestQuiet(en)) ms")
+            }
             print("JT done")
             DispatchQueue.main.async { devRunEnded() }
         }.start()
+    }
+
+    /// The longest quiet stretch inside the speech, in ms.
+    private static func longestQuiet(_ pcm: [Float]) -> Int {
+        let block = SystemVoice.sampleRate * 4 / 1000
+        var run = 0, best = 0, heard = false
+        for b in 0..<(pcm.count / block) {
+            if pcm[(b * block)..<((b + 1) * block)].contains(where: { abs($0) > 0.01 }) {
+                if heard { best = max(best, run) }
+                heard = true
+                run = 0
+            } else if heard {
+                run += 1
+            }
+        }
+        return best * 4
     }
 
     /// Length, and the quiet stretches inside the speech: "at ms: length ms".

@@ -76,8 +76,9 @@ public final class Trimmer {
     /// back until the next voice's first sound (the system voice can take a while to switch voices, and the end of the
     /// word must not wait for that).
     ///
-    /// `capMs` nil (the text before ends in punctuation, or VoiceOver puts a break or a new sentence there): the pause stays
-    /// as the voice made it, the next voice's leading silence included. Otherwise it becomes
+    /// `capMs` nil (VoiceOver puts a break or a new sentence there): the pause stays as the voice made it, the next voice's
+    /// leading silence included. Otherwise (no punctuation there, or the pause a punctuation mark asks for, see
+    /// `ApplePlanner.switchPause`) it becomes
     /// `capMs`: what the voice made after its last sound (the fading decay, then silence), cut or padded to that. The
     /// sounds themselves keep their natural ends and starts (cutting the soft end of the last syllable away, with no
     /// pause at all, sounded very odd); the next voice's leading silence is dropped (bar a short lead-in).

@@ -464,7 +464,9 @@ extension BoostSynthesis {
                 for (i, run) in runs.enumerated() where !run.text.isEmpty {
                     if isCancelled() { return .cancelled }
                     let other = run.voice == .other && otherVoice != nil
-                    let words = runs.count > 1 ? LanguageRuns.lowercasingLoneCapital(run.text) : run.text
+                    var words = runs.count > 1 ? LanguageRuns.lowercasingLoneCapital(run.text) : run.text
+                    let reader = other ? scheme.secondary?.lang : scheme.main.lang
+                    if let lang = reader, !LanguageRuns.isChinese(lang) { words = LanguageRuns.westernPunctuation(words) }
                     let outcome = (other ? otherSynth : mainSynth).speak(words, voice: other ? otherVoice! : mainVoice,
                                                                           rate: other ? otherRate : mainRate, pitch: request.pitch,
                                                                           isCancelled: isCancelled) { pcm in
@@ -480,11 +482,7 @@ extension BoostSynthesis {
                     case .done: break
                     }
                     // where the voices change: the pause its punctuation asks for, else none (as `ApplePlan.switchCapMs`)
-                    if i < runs.count - 1 {
-                        let end = words.trimmingCharacters(in: .whitespaces).last
-                        let pause = end.map { "，。！？、；：,.!?;:…".contains($0) } == true
-                        emit(proc.endStretch(capMs: pause ? nil : ApplePlanner.switchPauseMs))
-                    }
+                    if i < runs.count - 1 { emit(proc.endStretch(capMs: ApplePlanner.switchPause(after: words, speed: speed))) }
                 }
             }
             // VoiceOver's break: silence, sped up with the rest

@@ -70,6 +70,25 @@ public enum LanguageRuns {
         return s.lowercased()
     }
 
+    /// Chinese pause marks as a Western voice knows them: Samantha passes over "，" and "、" without a pause (16 ms
+    /// against 224 ms for ","; measured on an iPad, `-joinTest`).
+    public static func westernPunctuation(_ s: String) -> String {
+        guard s.contains(where: isCJKPunct) else { return s }
+        var out = ""
+        for c in s {
+            switch c {
+            case "，", "、": out += ", "
+            case "；": out += "; "
+            case "：": out += ": "
+            case "。": out += ". "
+            case "！": out += "! "
+            case "？": out += "? "
+            default: out.append(c)
+            }
+        }
+        return out
+    }
+
     /// Marks a pause only (the punctuation NVDA's Dual Voice add-on calls "complex"): never read out on its own.
     static func isPausePunct(_ c: Character) -> Bool { ",.!?;:…\"'`()«»-".contains(c) || isCJKPunct(c) }
 

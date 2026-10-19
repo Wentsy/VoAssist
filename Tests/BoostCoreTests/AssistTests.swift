@@ -249,8 +249,8 @@ final class ApplePlanTests: XCTestCase {
         let sam = #"<voice name="com.apple.voice.super-compact.en-US.Samantha">"#
         XCTAssertEqual(p.ssml, "<speak>打开 \(sam)Safari </voice>浏览器，\(sam)Hello.</voice></speak>")
         XCTAssertEqual(p.segments, [.main, .other, .main, .other])
-        // a switch without punctuation adds no pause to the voices' own soft ends; "，" keeps the voice's own pause
-        XCTAssertEqual(p.switchCapMs, [0, 0, nil])
+        // a switch without punctuation adds no pause to the voices' own soft ends; after "，" the main voice's own pause
+        XCTAssertEqual(p.switchCapMs, [0, 0, 300])
         // a pause, when one is set, gets shorter as the voice speaks faster (VoiceOver 100 % = about 4x)
         ApplePlanner.switchPauseMs = 15
         defer { ApplePlanner.switchPauseMs = 0 }
@@ -287,7 +287,28 @@ final class ApplePlanTests: XCTestCase {
         // "Node.js": the dot is read by the main voice and is no full stop, so no pause after it
         let p = ApplePlanner.plan("<speak>Node.js 和 Hello. 你好</speak>", scheme: tt, rules: RuleBook([]), map: map)
         XCTAssertEqual(p.segments, [.other, .main, .other, .main, .other, .main])
-        XCTAssertEqual(p.switchCapMs, [0, 0, 0, 0, nil])
+        XCTAssertEqual(p.switchCapMs, [0, 0, 0, 0, 240])
+    }
+
+    /// Where the voices switch after a punctuation mark: the pause the main voice makes there, shorter as it speaks faster.
+    func testPunctuationPauseAtASwitch() {
+        XCTAssertEqual(ApplePlanner.switchPause(after: "设置，", speed: 1), 300)
+        XCTAssertEqual(ApplePlanner.switchPause(after: "Wi-Fi、", speed: 1), 300)
+        XCTAssertEqual(ApplePlanner.switchPause(after: "下载完成。", speed: 1), 240)
+        XCTAssertEqual(ApplePlanner.switchPause(after: "Hello, ", speed: 2), 150)
+        XCTAssertEqual(ApplePlanner.switchPause(after: "打开", speed: 1), 0)
+        XCTAssertEqual(ApplePlanner.switchPause(after: ".", speed: 1), 0, "a dot read out is no full stop")
+        let fast = ApplePlanner.plan(#"<speak><prosody rate="400%">设置，Safari</prosody></speak>"#, scheme: tt, rules: RuleBook([]), map: map)
+        XCTAssertEqual(fast.switchCapMs, [75])
+    }
+
+    /// Samantha passes over Chinese marks: in her stretches they become hers.
+    func testChineseMarksForTheWesternVoice() {
+        XCTAssertEqual(LanguageRuns.westernPunctuation("Hello，World、OK"), "Hello, World, OK")
+        XCTAssertEqual(LanguageRuns.westernPunctuation("Hello"), "Hello")
+        let sam = #"<voice name="com.apple.voice.super-compact.en-US.Samantha">"#
+        XCTAssertEqual(ApplePlanner.plan("<speak>Hello，World 你好，世界</speak>", scheme: tt, rules: RuleBook([]), map: map).ssml,
+                       "<speak>\(sam)Hello, World </voice>你好，世界</speak>")
     }
 
     func testSecondaryRelativeRateIsAbsoluteInside() {
