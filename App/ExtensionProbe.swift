@@ -87,7 +87,7 @@ enum ExtensionProbe {
         // The app gets an XPC proxy, not our class: ask it by selector, as the system does.
         let voicesSel = NSSelectorFromString("speechVoices")
         let voices = au.responds(to: voicesSel) ? (au.perform(voicesSel)?.takeUnretainedValue() as? [AVSpeechSynthesisProviderVoice]) ?? [] : []
-        r.lines.append("扩展向系统提供 \(voices.count) 个方案：" + voices.map { "\($0.name)（\($0.supportedLanguages.joined(separator: "、"))）" }.joined(separator: "，"))
+        r.lines.append("扩展向系统提供 \(voices.count) 个声音：" + voices.map { "\($0.name)（\($0.supportedLanguages.joined(separator: "、"))）" }.joined(separator: "，"))
         guard let pv = voices.first(where: { $0.identifier == scheme.providerIdentifier }) ?? voices.first else {
             r.lines.append("扩展没有给出音色，无法继续")
             return

@@ -439,7 +439,7 @@ extension BoostSynthesis {
     /// 200-950 ms per request with a Latin word in a log from an iPad on iPadOS 26.7 (iOS 27: 1-2 ms either way). So there
     /// a request is read stretch by stretch, each language's stretches by a synthesizer of its own (`main`, `other`), as
     /// plain utterances. VoiceOver's requests there are short and simple (a name; at times a break and a second part;
-    /// `<prosody volume pitch>`, and no rate at VoiceOver's 50 % on an iPad), so `SSML.parse` has all of it.
+    /// `<prosody volume pitch>`, a rate only away from VoiceOver's default one), so `SSML.parse` has all of it.
     public static func runPerVoice(ssml: String, scheme: VoiceScheme, settings s: BoostSettings, rules: RuleBook,
                                    main mainSynth: SystemVoice, other otherSynth: SystemVoice,
                                    isCancelled: () -> Bool, emit: ([Float]) -> Void) -> Status {

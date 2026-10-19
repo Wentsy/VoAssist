@@ -54,6 +54,17 @@ public struct VoiceScheme: Codable, Identifiable, Equatable, Hashable {
     /// The language list the scheme appears in.
     public var language: String { main.lang }
 
+    /// The languages the scheme is offered for: its main voice's; a Chinese one also for the other spoken Chinese ones
+    /// VoiceOver keeps a voice for. VoiceOver reads text tagged with another of them (the status bar in the system's
+    /// Mandarin, under a Cantonese scheme) with the voice chosen for that one, which can then be the same scheme. The
+    /// system files a voice under its first language only, so the scheme is one voice per language
+    /// (`providerIdentifier(for:)`).
+    public var offeredLanguages: [String] {
+        guard LanguageRuns.isChinese(language) else { return [language] }
+        return [language] + VoiceScheme.chineseLanguages.filter { $0 != language }
+    }
+    static let chineseLanguages = ["zh-CN", "zh-TW", "yue-HK"]
+
     /// Whether the secondary voice reads Latin text (a Chinese main voice) or Chinese characters (any other).
     public static func secondaryReadsEnglish(main lang: String) -> Bool { LanguageRuns.isChinese(lang) }
 
@@ -85,8 +96,16 @@ public struct VoiceScheme: Codable, Identifiable, Equatable, Hashable {
 
     public var providerIdentifier: String { VoiceScheme.providerPrefix + id.uuidString }
 
+    /// The scheme's voice in one of its `offeredLanguages`: in its own language the identifier it always had (so what
+    /// VoiceOver has chosen stays), in another one with that language after it.
+    public func providerIdentifier(for lang: String) -> String {
+        lang == language ? providerIdentifier : providerIdentifier + "." + lang
+    }
+
+    /// The scheme behind one of its voices, whichever language it is in.
     public static func schemeID(fromProvider identifier: String) -> UUID? {
-        identifier.hasPrefix(providerPrefix) ? UUID(uuidString: String(identifier.dropFirst(providerPrefix.count))) : nil
+        guard identifier.hasPrefix(providerPrefix) else { return nil }
+        return UUID(uuidString: String(identifier.dropFirst(providerPrefix.count).prefix(36)))
     }
 
     // MARK: defaults

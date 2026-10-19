@@ -247,14 +247,17 @@ public class BoostAudioUnit: AVSpeechSynthesisProviderAudioUnit {
     /// The user's voice schemes (the app's `schemes.json`; the default schemes before the app first ran).
     private var schemes: [VoiceScheme] { VoiceScheme.shared() }
 
-    /// Only the schemes, each in its main voice's language alone: a Chinese scheme in the Mandarin list, not also in the
-    /// English one (it reads English through its secondary voice all the same).
+    /// Only the schemes, each in its main voice's language list (`offeredLanguages`: a Chinese one in every Chinese list,
+    /// as a voice per list), not also in its secondary voice's (a Chinese scheme reads English through its secondary
+    /// voice all the same).
     public override var speechVoices: [AVSpeechSynthesisProviderVoice] {
         get {
             traced("speechVoices") {
-                schemes.map {
-                    AVSpeechSynthesisProviderVoice(name: $0.name, identifier: $0.providerIdentifier,
-                                                   primaryLanguages: [$0.language], supportedLanguages: [$0.language])
+                schemes.flatMap { s in
+                    s.offeredLanguages.map {
+                        AVSpeechSynthesisProviderVoice(name: s.name, identifier: s.providerIdentifier(for: $0),
+                                                       primaryLanguages: [$0], supportedLanguages: [$0])
+                    }
                 }
             }
         }

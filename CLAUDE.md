@@ -19,7 +19,7 @@ xcodegen generate                         # 改了 project.yml 或增删源文�
 - 语速模型：旁白 100% = 苹果最快；加倍只由 Sonic 做，只在 App 里设置。
 - `Sources/CSonic` 是 NVDA 同一版本的原版 Sonic，不要改。
 - 各处标识要一致（见 README“自己编译”）。
-- 方案的 `id` 和默认方案的 UUID 不能变；新字段解码用 `decodeIfPresent`。
+- 方案的 `id` 和默认方案的 UUID 不能变，方案本身语言的声音标识也不能变（其他中文的带语言后缀，`providerIdentifier(for:)`）；新字段解码用 `decodeIfPresent`。
 - `synthesizeSpeechRequest` 只等到第一块声音就返回：旁白的调用是排队执行的，等久了“取消”和下一句都得等。
 - 交给苹果合成器只能经过 `SystemVoice.run`：iOS 27 以前的 `AnnouncementGuard` 靠它设的线程标记挡掉推给旁白的播报（否则旁白不读“按钮”和提示）。这是私有接口，App Store 版不能带。
 - 新请求交给空闲的合成器（`SynthWorker` 的合成器组、`SystemVoice.isBusy`），不要改回一个合成器：被打断的合成器要忙约 0.3 秒。

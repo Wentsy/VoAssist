@@ -133,6 +133,18 @@ final class SchemeTests: XCTestCase {
         XCTAssertEqual(VoiceScheme.defaults.first?.secondary, .samantha)
     }
 
+    /// A Chinese scheme in every Chinese list, its own first; any other in its own alone.
+    func testOfferedLanguages() {
+        XCTAssertEqual(VoiceScheme.defaultTingting.offeredLanguages, ["zh-CN", "zh-TW", "yue-HK"])
+        XCTAssertEqual(VoiceScheme(name: "善怡", main: .sinji, secondary: .samantha).offeredLanguages, ["yue-HK", "zh-CN", "zh-TW"])
+        XCTAssertEqual(VoiceScheme(name: "Samantha", main: .samantha, secondary: .tingting).offeredLanguages, ["en-US"])
+        // one voice per language: the scheme's own keeps its identifier, the others lead back to it
+        let s = VoiceScheme.defaultTingting
+        XCTAssertEqual(s.providerIdentifier(for: "zh-CN"), s.providerIdentifier)
+        XCTAssertEqual(s.providerIdentifier(for: "yue-HK"), s.providerIdentifier + ".yue-HK")
+        for lang in s.offeredLanguages { XCTAssertEqual(VoiceScheme.schemeID(fromProvider: s.providerIdentifier(for: lang)), s.id) }
+    }
+
     func testDecodingFillsDefaultsAndClamps() throws {
         let json = #"{"main":{"id":"com.apple.voice.compact.zh-CN.Tingting","name":"婷婷","lang":"zh-CN"},"boost":9}"#
         let s = try JSONDecoder().decode(VoiceScheme.self, from: Data(json.utf8)).clamped()
