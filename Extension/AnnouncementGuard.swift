@@ -12,6 +12,10 @@ import ObjectiveC
 enum AnnouncementGuard {
     private static let lock = NSLock()
     private static var installed: Bool?
+    #if DEBUG
+    /// Development (`CPUBench`): let the text through.
+    static var bypass = false
+    #endif
 
     /// Installs the guard once per process; true if it is in place.
     static func install() -> Bool {
@@ -31,6 +35,9 @@ enum AnnouncementGuard {
         typealias Getter = @convention(c) (AnyObject, Selector) -> Unmanaged<AnyObject>?
         let original = unsafeBitCast(method_getImplementation(method), to: Getter.self)
         let replacement: @convention(block) (AnyObject) -> Unmanaged<AnyObject>? = { action in
+            #if DEBUG
+            if bypass { return original(action, textSel) }
+            #endif
             if SystemVoice.isHandingOver { return nil }
             return original(action, textSel)
         }

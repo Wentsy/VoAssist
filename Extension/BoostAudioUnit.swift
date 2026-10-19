@@ -284,6 +284,9 @@ public class BoostAudioUnit: AVSpeechSynthesisProviderAudioUnit {
                 switch newValue?[DiagnosticLog.commandKey] as? String {
                 case "sendLog": sendLog = true
                 case "clearLog": DiagnosticLog.clear()
+                #if DEBUG
+                case "cpuBench": CPUBench.run()
+                #endif
                 default: super.fullState = newValue
                 }
             }
