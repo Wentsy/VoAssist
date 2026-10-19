@@ -11,11 +11,29 @@ private final class ChunkBox {
     private var abandoned = false
     private var woken = false
     private(set) var lastNews = Date()
+    /// When the callbacks came (diagnostics): the first and the last sound, the last end of a stretch, didFinish.
+    private(set) var firstSoundAt: Date?, lastSoundAt: Date?, endAt: Date?, finishedAt: Date?
+    private(set) var soundChunks = 0
+
+    /// Some sound has come.
+    var hasSound: Bool {
+        cond.lock(); defer { cond.unlock() }
+        return firstSoundAt != nil
+    }
+
+    /// The callback times (see above), read together.
+    func times() -> (first: Date?, last: Date?, end: Date?, finished: Date?, chunks: Int) {
+        cond.lock(); defer { cond.unlock() }
+        return (firstSoundAt, lastSoundAt, endAt, finishedAt, soundChunks)
+    }
 
     func push(_ c: [Float]) {
         cond.lock(); defer { cond.unlock() }
         lastNews = Date()
         guard !abandoned, !c.isEmpty else { return }
+        if firstSoundAt == nil { firstSoundAt = lastNews }
+        lastSoundAt = lastNews
+        soundChunks += 1
         chunks.append((c, segment))
         cond.signal()
     }
@@ -24,6 +42,7 @@ private final class ChunkBox {
     func endOfStretch() {
         cond.lock(); defer { cond.unlock() }
         lastNews = Date()
+        endAt = lastNews
         segment += 1
         cond.signal()
     }
@@ -31,6 +50,7 @@ private final class ChunkBox {
     func finish() {
         cond.lock(); defer { cond.unlock() }
         finished = true
+        finishedAt = Date()
         cond.signal()
     }
 
@@ -55,6 +75,25 @@ private final class ChunkBox {
         let c = chunks
         chunks.removeAll()
         return (c, segment, finished, Date().timeIntervalSince(lastNews))
+    }
+}
+
+/// How long the main queue took at most to run a block sent to it (diagnostics, see `SystemVoice.reportSlowEnd`).
+final class MainQueueLag {
+    private let lock = NSLock()
+    private var worst = 0.0
+
+    var maxMs: Int {
+        lock.lock(); defer { lock.unlock() }
+        return Int(worst * 1000)
+    }
+
+    func ping() {
+        let sent = Date()
+        DispatchQueue.main.async { [self] in
+            let d = Date().timeIntervalSince(sent)
+            lock.lock(); worst = max(worst, d); lock.unlock()
+        }
     }
 }
 
@@ -213,8 +252,8 @@ public final class SystemVoice {
     public var debugSwitchDelay: TimeInterval = 0
 
     /// Synthesizes plain `text` and hands the PCM to `onPCM` (on the calling thread) as it comes. Blocks until the
-    /// utterance is complete, `isCancelled` turns true, or nothing arrives for `stallTimeout` seconds. Not on the main
-    /// thread.
+    /// utterance is complete, `isCancelled` turns true, or nothing arrives for `stallTimeout` seconds (`soundStall` once
+    /// it has sounded). Not on the main thread.
     public func speak(_ text: String, voice: AVSpeechSynthesisVoice, rate: Float, pitch: Float, stallTimeout: TimeInterval = 4,
                       isCancelled: () -> Bool, onPCM: ([Float]) -> Void) -> Outcome {
         let u = AVSpeechUtterance(string: text)
@@ -266,12 +305,21 @@ public final class SystemVoice {
         var voiced = 0    // the newest stretch whose sound was passed on
         var switchFrom: Date?
         lastSwitchWaitsMs = []
+        // diagnostics: how late the end came, and whether the main queue (where the callbacks arrive) was held up
+        let t0 = Date()
+        let watch = DiagnosticLog.isOn
+        let lag = MainQueueLag()
+        var nextPing = t0
         func stretchEnded() {
             reported += 1
             if reported < stretches { switchFrom = Date() }
             onPCM([], reported)
         }
         while true {
+            if watch && Date() >= nextPing {
+                lag.ping()
+                nextPing = Date().addingTimeInterval(0.05)
+            }
             let (chunks, ended, finished, quiet) = box.take(timeout: 0.01)
             for (c, seg) in chunks {
                 if isCancelled() { break }
@@ -292,13 +340,15 @@ public final class SystemVoice {
             }
             while reported < ended { stretchEnded() }
             // didFinish is the end; should it never come, all the expected stretches and a quiet second are
-            if finished || (ended >= stretches && quiet > 1) {
+            if finished || (ended >= stretches && quiet > SystemVoice.soundStall) {
                 lastEnd = finished ? "didFinish" : "quiet (\(ended) stretches)"
+                if watch { SystemVoice.reportSlowEnd(box, since: t0, lag: lag, how: lastEnd) }
                 loadedVoices.formUnion(voices)
                 if !finished { lock.lock(); inFlight = 0; lock.unlock() } // its end will not be reported
                 return .done
             }
-            if quiet > stallTimeout {
+            if quiet > stallTimeout || (quiet > SystemVoice.soundStall && box.hasSound) {
+                if watch { SystemVoice.reportSlowEnd(box, since: t0, lag: lag, how: "stalled") }
                 box.abandon()
                 synth.stopSpeaking(at: .immediate)
                 // a synthesizer that went quiet may stay stuck (every later request would wait it out too): a new one next
@@ -308,6 +358,23 @@ public final class SystemVoice {
                 return .timedOut
             }
         }
+    }
+
+    /// How long an utterance that has sounded may go without news before it counts as stuck: the system voice sends an
+    /// utterance at many times real time, block after block, but now and then stops short of its end, without its last
+    /// blocks, the end of its stretch or didFinish (an iPad with iPadOS 26.7 under VoiceOver: about once in 45 items,
+    /// 300 ms and more), and VoiceOver waits for it. Before, that wait lasted `stallTimeout` (4 s). Then what came is
+    /// played, the item ends, and the synthesizer is replaced. Also the wait for didFinish after the last stretch.
+    static let soundStall: TimeInterval = 0.3
+
+    /// Diagnostics: an utterance whose end came late after its last sound (more than 80 ms) goes into the log, with when
+    /// each kind of callback came and how long the main queue, where they arrive, was held up at most meanwhile.
+    fileprivate static func reportSlowEnd(_ box: ChunkBox, since t0: Date, lag: MainQueueLag, how: String) {
+        let t = box.times()
+        guard let last = t.last else { return }
+        guard (t.finished ?? Date()).timeIntervalSince(last) > 0.08 else { return }
+        func ms(_ d: Date?) -> String { d.map { "\(Int($0.timeIntervalSince(t0) * 1000))" } ?? "-" }
+        DiagnosticLog.write("slow end (\(how)): sound \(ms(t.first))-\(ms(last)) ms in \(t.chunks) chunks, stretch end \(ms(t.end)) ms, didFinish \(ms(t.finished)) ms; main queue held up \(lag.maxMs) ms at most")
     }
 
     /// Loads the voice and the synthesizer (the first utterance costs ~250 ms, later ones ~5 ms before the first audio).

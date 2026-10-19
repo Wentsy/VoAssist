@@ -140,6 +140,7 @@ struct ContentView: View {
             if args.contains("-switchTest") { SwitchTest.run() }
             if args.contains("-voiceCompare") { setvbuf(stdout, nil, _IOLBF, 0); VoiceCompare.run() }
             if args.contains("-latency") { LatencyProbe.run() }
+            if args.contains("-stallTest") { setvbuf(stdout, nil, _IOLBF, 0); StallTest.run() }
             if args.contains("-joinTest") { setvbuf(stdout, nil, _IOLBF, 0); JoinTest.run() }
             if args.contains("-interruptTest") { setvbuf(stdout, nil, _IOLBF, 0); InterruptTest.run() }
             if args.contains("-focusTest") { setvbuf(stdout, nil, _IOLBF, 0); FocusTest.run() }

@@ -340,6 +340,18 @@ final class ApplePlanTests: XCTestCase {
         XCTAssertEqual(gap.pieces.first?.ssml, gap.ssml)
     }
 
+    /// As VoiceOver on iOS 27 sends an item (captured on an iPhone Air): one request, its parts in <s>, each in <lang>.
+    func testPiecesOfARealRequest() {
+        let ssml = #"<speak><prosody rate="99.99998%" volume="-1.9382001dB"><s><lang xml:lang="cmn-CN">打开Safari浏览器</lang></s><s><lang xml:lang="cmn-CN">按钮</lang></s></prosody></speak>"#
+        let p = ApplePlanner.plan(ssml, scheme: tt, rules: RuleBook([]), map: map)
+        XCTAssertEqual(p.pieces.map(\.ssml), [
+            #"<speak><prosody rate="100%" volume="-1.9382001dB"><s>打开</s></prosody></speak>"#,
+            #"<speak><prosody rate="100%" volume="-1.9382001dB"><s>Safari</s></prosody></speak>"#,
+            #"<speak><prosody rate="100%" volume="-1.9382001dB"><s>浏览器</s><s>按钮</s></prosody></speak>"#,
+        ])
+        XCTAssertEqual(p.switchCapMs, [0, 0])
+    }
+
     /// Every piece is well-formed for the system voice.
     func testPiecesAreWellFormed() {
         let requests = [
