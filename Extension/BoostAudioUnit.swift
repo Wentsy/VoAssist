@@ -400,7 +400,7 @@ public class BoostAudioUnit: AVSpeechSynthesisProviderAudioUnit {
     /// How the host played the request before (over once the next one comes, or it is cancelled), for the diagnostic log.
     private func recordPreviousPlayback() {
         guard DiagnosticLog.isOn, let p = ring.previousPlayback(), p.gen > 0, p.pulls > 0 || p.samples > 0 else { return }
-        DiagnosticLog.write("playback #\(p.gen): first pull after \(p.firstPullAfterMs.map { "\($0) ms" } ?? "never"), \(p.pulls) pulls of \(p.minFrames)-\(p.maxFrames) frames (\(p.pullsBeforeAudio) before any audio), first audio out after \(p.startedAfterMs.map { "\($0) ms" } ?? "never"), ran dry \(p.ranDry) times, \(p.samples) samples, \(p.complete ? "complete" : "not complete")")
+        DiagnosticLog.write("playback #\(p.gen): first pull after \(p.firstPullAfterMs.map { "\($0) ms" } ?? "never"), \(p.pulls) pulls of \(p.minFrames)-\(p.maxFrames) frames (\(p.pullsBeforeAudio) before any audio), first audio out after \(p.startedAfterMs.map { "\($0) ms" } ?? "never"), ran dry \(p.ranDry) times (\(p.dryMs) ms), \(p.samples) samples, \(p.complete ? "complete" : "not complete")")
     }
 }
 

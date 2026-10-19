@@ -28,6 +28,7 @@ public final class AudioRing {
     private var block = AudioRing.defaultBlock // the frames the host pulls at a time, as last seen
     private var playback = Playback(gen: 0)
     private var resetAt = DispatchTime.now().uptimeNanoseconds
+    private var dryAt: UInt64? // when playback last ran dry, until it plays on
 
     /// How the host played one request, for the diagnostic log.
     public struct Playback: Equatable {
@@ -41,8 +42,9 @@ public final class AudioRing {
         public var maxFrames = 0
         /// From the request to the first audio handed to the host (nil: none was).
         public var startedAfterMs: Int?
-        /// Times playback ran dry in the middle.
+        /// Times playback ran dry in the middle, and how long it went without sound then, in all.
         public var ranDry = 0
+        public var dryMs = 0
         public var samples = 0
         /// The host was told the request is complete.
         public var complete = false
@@ -92,6 +94,7 @@ public final class AudioRing {
         ranDry = false
         begun = false
         switching = false
+        dryAt = nil
         cond.broadcast()
         return gen
     }
@@ -163,6 +166,10 @@ public final class AudioRing {
             }
             playing = true
             begun = true
+            if let d = dryAt {
+                playback.dryMs += Int((DispatchTime.now().uptimeNanoseconds - d) / 1_000_000)
+                dryAt = nil
+            }
             if playback.startedAfterMs == nil {
                 playback.startedAfterMs = Int((DispatchTime.now().uptimeNanoseconds - resetAt) / 1_000_000)
             }
@@ -185,6 +192,7 @@ public final class AudioRing {
             playing = false
             ranDry = true
             playback.ranDry += 1
+            dryAt = DispatchTime.now().uptimeNanoseconds
         }
         if head == samples.count && head > 0 {
             samples.removeAll(keepingCapacity: true)

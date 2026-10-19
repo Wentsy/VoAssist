@@ -2,7 +2,7 @@ import UIKit
 
 /// `-focusTest` launch argument (development): moves VoiceOver's focus over a few controls by itself, round after
 /// round, so what VoiceOver sends the voice for each (label, trait, value, hint) shows in the diagnostic log and the
-/// system log without anyone swiping. VoiceOver has to be on, with the voice under test.
+/// system log without anyone swiping. Two of them mix Chinese and English, for the joins. VoiceOver has to be on, with the voice under test.
 enum FocusTest {
     static func run() {
         DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
@@ -32,7 +32,12 @@ enum FocusTest {
             let field = UITextField()
             field.placeholder = "输入消息"
             field.borderStyle = .roundedRect
-            let stack = UIStackView(arrangedSubviews: [send, talk, toggle, field])
+            // Chinese and English in one name: how the voices join
+            let safari = UIButton(type: .system)
+            safari.setTitle("打开Safari浏览器", for: .normal)
+            let wifi = UIButton(type: .system)
+            wifi.setTitle("Wi-Fi 设置", for: .normal)
+            let stack = UIStackView(arrangedSubviews: [send, talk, toggle, field, safari, wifi])
             stack.axis = .vertical
             stack.spacing = 40
             stack.alignment = .center
@@ -43,7 +48,7 @@ enum FocusTest {
                 stack.centerYAnchor.constraint(equalTo: view.centerYAnchor),
                 field.widthAnchor.constraint(equalToConstant: 240),
             ])
-            targets = [send, talk, toggle, field]
+            targets = [send, talk, toggle, field, safari, wifi]
         }
 
         override func viewDidAppear(_ animated: Bool) {
