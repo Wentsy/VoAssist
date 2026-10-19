@@ -434,6 +434,59 @@ public enum BoostSynthesis {
 }
 
 extension BoostSynthesis {
+    /// iOS 27: VoiceOver's request as the system voice reads it (`ApplePlanner`, its pauses as when VoiceOver reads that
+    /// voice itself), a piece per stretch of one voice, each read whole by its voice's own synthesizer (`main`, `other`).
+    /// One synthesizer switching voices inside an utterance took 3-27 ms per switch on an iPhone Air, and the player held
+    /// back 300 ms of sound before starting a request with a switch ahead, lest it ran dry while the voice changed: mixed
+    /// items sounded after 58-70 ms against 24-48 ms. A piece starts on an idle synthesizer with its voice loaded.
+    public static func runPieces(ssml: String, scheme: VoiceScheme, settings s: BoostSettings, rules: RuleBook,
+                                 main mainSynth: SystemVoice, other otherSynth: SystemVoice,
+                                 isCancelled: () -> Bool, emit: ([Float]) -> Void) -> Status {
+        let sr = SystemVoice.sampleRate
+        let map = s.effectiveRateMap
+        guard let mainVoice = mainSynth.resolve(scheme.main) else { return .noVoice }
+        // the secondary voice as the system has it, like the main one (see `run`)
+        var scheme = scheme
+        if let o = scheme.secondary { scheme.secondary = otherSynth.resolve(o).map { VoiceEntry(id: $0.identifier, name: o.name, lang: o.lang) } }
+        let otherVoice = scheme.secondary.flatMap { otherSynth.resolve($0) }
+        let plan = ApplePlanner.plan(ssml, scheme: scheme, rules: rules, map: map)
+        let proc = SegmentProcessor(sampleRate: sr, stretch: scheme.boost, trimLeading: !plan.keepLeading, trimTrailing: !plan.keepTrailing)
+        let otherGain = scheme.secondaryGain
+        let pitch = SSML.parse(ssml).pitch
+        for (i, piece) in plan.pieces.enumerated() {
+            if isCancelled() { return .cancelled }
+            let other = piece.voice == .other && otherVoice != nil
+            let synth = other ? otherSynth : mainSynth
+            let voice = other ? otherVoice! : mainVoice
+            func take(_ pcm: [Float]) {
+                guard !pcm.isEmpty else { return }
+                var x = pcm
+                if other && otherGain != 1 { applyGain(&x, otherGain) }
+                emit(proc.push(x))
+            }
+            var outcome = synth.speak(ssml: piece.ssml, voice: voice, stretches: 1, isCancelled: isCancelled) { pcm, _ in take(pcm) }
+            if outcome == .rejected, LanguageRuns.speakable(piece.text) {
+                // the system voice did not take the piece as rewritten: its words, plainly
+                outcome = synth.speak(piece.text, voice: voice, rate: map.rate(for: min(piece.speed, map.maxMultiplier)), pitch: pitch,
+                                      isCancelled: isCancelled) { take($0) }
+            }
+            switch outcome {
+            case .cancelled: return .cancelled
+            case .timedOut:
+                emit(proc.finish())
+                return .timedOut
+            case .done, .rejected: break
+            }
+            if i < plan.pieces.count - 1, i < plan.switchCapMs.count { emit(proc.endStretch(capMs: plan.switchCapMs[i])) }
+        }
+        emit(proc.finish())
+        // two requests played back to back apart a little, as in `run`
+        if plan.hasText && !plan.keepTrailing {
+            emit([Float](repeating: 0, count: Int(0.1 / max(plan.speed * scheme.boost, 1) * Double(sr))))
+        }
+        return .ok
+    }
+
     /// Before iOS 27 a synthesizer that changes voices pays for it every time, between utterances as well as inside one:
     /// 20-65 ms per utterance on the iOS 26.5 simulator, against 1-2 ms with a synthesizer per voice (`-switchTest`), and
     /// 200-950 ms per request with a Latin word in a log from an iPad on iPadOS 26.7 (iOS 27: 1-2 ms either way). So there

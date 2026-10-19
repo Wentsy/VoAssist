@@ -6,14 +6,12 @@ import Foundation
 /// first audio is out, the rest follows at many times real time, so waiting for more only delays the speech after
 /// VoiceOver's sound (50 ms, as in NVDA's rate boost, cost 6 to 10 ms on an iPhone Air; 20 ms was better), while less
 /// than a block would play the first block part sound, part silence. Until the host has pulled, a block is taken to be
-/// `defaultBlock` frames. While the system voice is switching voices it waits for enough to last through that (300 ms)
-/// or for the next voice to have got going (`BoostSynthesis.run`): 100 ms was tried and "Safari浏览器" started at once,
-/// ran dry after "Safari" while Tingting's sound trickled in, and the cut popped. Should it run dry in the middle all the
-/// same, it does not get the rest in scraps between silences: it fades out, waits as at the start, and fades back in
-/// (6 ms each way: 2 ms popped).
+/// `defaultBlock` frames. (While one synthesizer switched voices inside an utterance it used to wait for 300 ms in
+/// hand; each voice has synthesizers of its own now, see `BoostSynthesis.runPieces`.) Should it run dry in the middle,
+/// it does not get the rest in scraps between silences: it fades out, waits as at the start, and fades back in (6 ms
+/// each way: 2 ms popped).
 public final class AudioRing {
     public static let defaultBlock = 256
-    public static let switchSamples = SystemVoice.sampleRate * 300 / 1000
     private static let fade = SystemVoice.sampleRate * 6 / 1000
 
     private let cond = NSCondition()
@@ -24,7 +22,6 @@ public final class AudioRing {
     private var playing = false // false: waiting for audio in hand before playing on (at the start, after running dry)
     private var ranDry = false
     private var begun = false // the host has started playing this request (or has been told it is complete)
-    private var switching = false
     private var block = AudioRing.defaultBlock // the frames the host pulls at a time, as last seen
     private var playback = Playback(gen: 0)
     private var resetAt = DispatchTime.now().uptimeNanoseconds
@@ -69,7 +66,7 @@ public final class AudioRing {
 
     /// Enough in hand to start or go on (under the lock).
     private var canPlay: Bool {
-        done || samples.count - head >= (switching ? AudioRing.switchSamples : block)
+        done || samples.count - head >= block
     }
 
     public var generation: Int {
@@ -93,7 +90,6 @@ public final class AudioRing {
         playing = false
         ranDry = false
         begun = false
-        switching = false
         dryAt = nil
         cond.broadcast()
         return gen
@@ -115,12 +111,6 @@ public final class AudioRing {
             producing = false
             cond.broadcast()
         }
-    }
-
-    /// The system voice is switching voices (true) or the next voice has sounded (false).
-    public func setSwitching(_ on: Bool, gen g: Int) {
-        cond.lock(); defer { cond.unlock() }
-        if g == gen { switching = on; cond.broadcast() }
     }
 
     /// True once the player could start (or has started already: a short request can be played to its end before the

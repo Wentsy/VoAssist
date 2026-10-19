@@ -302,6 +302,62 @@ final class ApplePlanTests: XCTestCase {
         XCTAssertEqual(fast.switchCapMs, [75])
     }
 
+    /// The request cut where the voices switch, each piece a whole SSML for one voice.
+    func testPiecesPerVoice() {
+        let p = ApplePlanner.plan("<speak>打开 Safari 浏览器，Hello.</speak>", scheme: tt, rules: RuleBook([]), map: map)
+        XCTAssertEqual(p.pieces.map(\.voice), [.main, .other, .main, .other])
+        XCTAssertEqual(p.pieces.map(\.ssml), ["<speak>打开 </speak>", "<speak>Safari </speak>", "<speak>浏览器，</speak>", "<speak>Hello.</speak>"])
+        XCTAssertEqual(p.pieces.map(\.text), ["打开 ", "Safari ", "浏览器，", "Hello."])
+        XCTAssertEqual(p.pieces.map(\.voice), p.segments)
+        XCTAssertEqual(p.switchCapMs.count, p.pieces.count - 1)
+    }
+
+    /// VoiceOver's elements open at a cut close at its end and open again in the next piece; its break goes with the
+    /// voice before; its language tags go.
+    func testPiecesKeepTheElements() {
+        let ssml = #"<speak><prosody rate="200%" volume="-6dB"><s><lang xml:lang="en-US">App Store</lang></s><s><break time="800ms"/></s><s>轻点两下以打开</s></prosody></speak>"#
+        let p = ApplePlanner.plan(ssml, scheme: tt, rules: RuleBook([]), map: map)
+        XCTAssertEqual(p.pieces.map(\.ssml), [
+            #"<speak><prosody rate="200%" volume="-6dB"><s>App Store</s><s><break time="800ms"/></s><s></s></prosody></speak>"#,
+            #"<speak><prosody rate="200%" volume="-6dB"><s>轻点两下以打开</s></prosody></speak>"#,
+        ])
+        XCTAssertEqual(p.pieces.map(\.speed), [2, 2])
+        XCTAssertEqual(p.switchCapMs, [nil], "VoiceOver's own pause at the switch")
+    }
+
+    func testPiecesSecondaryRateAndSinglePiece() {
+        var s = tt
+        s.secondaryRate = 0.5
+        let p = ApplePlanner.plan(#"<speak><prosody rate="100%">读 Hello</prosody></speak>"#, scheme: s, rules: RuleBook([]), map: map)
+        XCTAssertEqual(p.pieces.last?.ssml, #"<speak><prosody rate="100%"><prosody rate="50%">Hello</prosody></prosody></speak>"#)
+        XCTAssertEqual(p.pieces.last?.speed, 0.5)
+        // one voice: one piece, the request as rewritten
+        let one = ApplePlanner.plan(#"<speak><prosody rate="150%">设置<break time="250ms"/>按钮</prosody></speak>"#, scheme: tt, rules: RuleBook([]), map: map)
+        XCTAssertEqual(one.pieces.map(\.ssml), [one.ssml])
+        // breaks only: one piece for the main voice
+        let gap = ApplePlanner.plan(#"<speak><break time="500ms"/></speak>"#, scheme: tt, rules: RuleBook([]), map: map)
+        XCTAssertEqual(gap.pieces.map(\.voice), [.main])
+        XCTAssertEqual(gap.pieces.first?.ssml, gap.ssml)
+    }
+
+    /// Every piece is well-formed for the system voice.
+    func testPiecesAreWellFormed() {
+        let requests = [
+            #"<speak><prosody rate="250%"><s>设置</s><s>按钮</s></prosody></speak>"#,
+            #"<speak><prosody rate="130%" pitch="-15%"><s>打开 Wi-Fi 和 Bluetooth</s><s>按钮</s><s><break time="800ms"/></s><s>轻点两下以打开 Safari 浏览器</s></prosody></speak>"#,
+            #"<speak><lang xml:lang="cmn"><prosody volume="-1.9382001dB">听见时光beta版，<say-as interpret-as="characters">AB</say-as>中</prosody></lang></speak>"#,
+            "打开 App Store 有更新",
+        ]
+        for r in requests {
+            let p = ApplePlanner.plan(r, scheme: tt, rules: RuleBook([]), map: map)
+            XCTAssertFalse(p.pieces.isEmpty, r)
+            for piece in p.pieces {
+                XCTAssertTrue(XMLParser(data: Data(piece.ssml.utf8)).parse(), "\(piece.ssml) from \(r)")
+                XCTAssertFalse(piece.ssml.contains("<voice"), piece.ssml)
+            }
+        }
+    }
+
     /// Samantha passes over Chinese marks: in her stretches they become hers.
     func testChineseMarksForTheWesternVoice() {
         XCTAssertEqual(LanguageRuns.westernPunctuation("Hello，World、OK"), "Hello, World, OK")

@@ -262,22 +262,6 @@ final class AudioRingTests: XCTestCase {
         XCTAssertEqual(pull(r, 512).0.count, 512)
     }
 
-    /// "Safari浏览器": a short first voice does not start before the switch is over, a long one does.
-    func testHoldsOutDuringAVoiceSwitch() {
-        let r = AudioRing()
-        let g = r.reset()
-        r.setSwitching(true, gen: g)
-        r.append([Float](repeating: 0.5, count: AudioRing.switchSamples - 1), gen: g)
-        XCTAssertFalse(r.ready(gen: g))
-        XCTAssertEqual(pull(r, 512).0.count, 0)
-        r.setSwitching(false, gen: g) // the next voice sounded
-        XCTAssertTrue(r.ready(gen: g))
-        let g2 = r.reset()
-        r.setSwitching(true, gen: g2)
-        r.append([Float](repeating: 0.5, count: AudioRing.switchSamples), gen: g2)
-        XCTAssertTrue(r.ready(gen: g2))
-    }
-
     /// Run dry in the middle: faded out, then nothing in scraps until there is enough again, faded back in.
     func testRunningDryFadesAndWaits() {
         let r = AudioRing()

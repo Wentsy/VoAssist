@@ -39,8 +39,8 @@ final class SynthWorker {
     private var warmScheme: (main: VoiceEntry, secondary: VoiceEntry?)?
     private var gaveUp = Set<String>() // warm-ups that failed for another reason than a request (worker thread only)
     private var stopping = false
-    /// The synthesizers for the main voice and (before iOS 27, see `BoostSynthesis.runPerVoice`) for the secondary one,
-    /// the one in use first (worker thread only), all loaded while idle. One whose utterance was cut short goes on
+    /// The synthesizers for the main voice and for the secondary one (`BoostSynthesis.runPieces`, `runPerVoice`), the
+    /// one in use first (worker thread only), all loaded while idle. One whose utterance was cut short goes on
     /// working for a while (its didCancel came 260-345 ms after the stop on an iPad with iPadOS 26.7, for a long item),
     /// and a new utterance on it waits for that: the next item sounded after 211-322 ms there, 11-20 ms on an idle one.
     /// Fast swiping cuts nearly every item short, so a request goes to an idle one. A synthesizer made on the spot is no
@@ -50,7 +50,8 @@ final class SynthWorker {
     private var voice: SystemVoice { mains[0] }
     private var otherVoice: SystemVoice { others[0] }
     private let all: [SystemVoice] // for `wake` from the host's threads
-    private let perVoice = BoostAudioUnit.beforeIOS27
+    /// Before iOS 27 VoiceOver's requests are read as plain text (`BoostSynthesis.runPerVoice`), from then on as SSML.
+    private let plainText = BoostAudioUnit.beforeIOS27
 
     init() {
         all = mains + others
@@ -128,13 +129,11 @@ final class SynthWorker {
     }
 
     /// The next voice to load: the main voice, then the secondary one, in the synthesizers in use, then in the others.
-    /// A secondary voice is loaded in its own synthesizer before iOS 27, else inside an utterance of the main one.
     private func nextWarmUp(main: VoiceEntry, secondary: VoiceEntry?) -> WarmUp? {
         var list: [(SystemVoice, VoiceEntry, VoiceEntry?)] = []
-        for i in 0..<max(mains.count, perVoice ? others.count : 0) {
+        for i in 0..<max(mains.count, others.count) {
             if i < mains.count { list.append((mains[i], main, nil)) }
-            guard let o = secondary else { continue }
-            if !perVoice { list.append((mains[i], o, main)) } else if i < others.count { list.append((others[i], o, nil)) }
+            if let o = secondary, i < others.count { list.append((others[i], o, nil)) }
         }
         for (s, entry, within) in list where !s.isBusy {
             guard let id = s.resolve(entry)?.identifier, !s.loadedVoices.contains(id) else { continue }
@@ -155,7 +154,7 @@ final class SynthWorker {
         let ring = job.ring, gen = job.gen
         guard ring.generation == gen else { return } // superseded before it started
         idleFirst(&mains, for: job.scheme.main)
-        if perVoice { idleFirst(&others, for: job.scheme.secondary) }
+        idleFirst(&others, for: job.scheme.secondary)
         let t0 = Date()
         #if LATENCY_PROBE
         LatencyTrace.mark("worker")
@@ -178,16 +177,15 @@ final class SynthWorker {
             if firstAudio == nil && !pcm.isEmpty { firstAudio = Date() }
             ring.append(pcm, gen: gen)
         }
-        let status = perVoice
+        let status = plainText
             ? BoostSynthesis.runPerVoice(ssml: job.ssml, scheme: job.scheme, settings: settings, rules: RuleBook.shared(),
                                          main: voice, other: otherVoice, isCancelled: { ring.generation != gen }, emit: out)
-            : BoostSynthesis.run(ssml: job.ssml, scheme: job.scheme, settings: settings, rules: RuleBook.shared(),
-                                 voice: voice, isCancelled: { ring.generation != gen },
-                                 switching: { ring.setSwitching($0, gen: gen) }, emit: out)
+            : BoostSynthesis.runPieces(ssml: job.ssml, scheme: job.scheme, settings: settings, rules: RuleBook.shared(),
+                                       main: voice, other: otherVoice, isCancelled: { ring.generation != gen }, emit: out)
         if status != .ok && status != .cancelled {
             log.error("request failed: \(String(describing: status), privacy: .public) voice \(job.scheme.main.id, privacy: .public)")
         }
-        log.debug("request done in \(Int(Date().timeIntervalSince(t0) * 1000)) ms: \(String(describing: status), privacy: .public), end: \(self.voice.lastEnd, privacy: .public), voice switches took \(self.voice.lastSwitchWaitsMs.map(String.init).joined(separator: "/"), privacy: .public) ms")
+        log.debug("request done in \(Int(Date().timeIntervalSince(t0) * 1000)) ms: \(String(describing: status), privacy: .public), end: \(self.voice.lastEnd, privacy: .public)")
         if DiagnosticLog.isOn { record(job, status: status, started: t0, firstAudio: firstAudio) }
         ring.finish(gen: gen)
     }
@@ -203,7 +201,7 @@ final class SynthWorker {
         if DiagnosticLog.recordsSpeech { DiagnosticLog.write("request #\(job.gen) ssml: \(job.ssml.prefix(800))") }
         DiagnosticLog.write("request #\(job.gen) for \(job.voice)")
         DiagnosticLog.write("request #\(job.gen) \"\(s.name)\": main \(voices(s.main)), secondary \(voices(s.secondary)); VoiceOver rate \(Int((request.rate * 100).rounded()))%, boost \(s.boost), numbers \(s.numbers.rawValue), rules \(s.useRules ? "on" : "off"); \(DiagnosticLog.speech(request.segments.map(\.text).joined(separator: " ")))")
-        let how = perVoice ? "a synthesizer per voice" : "end \(voice.lastEnd), voice switches \(voice.lastSwitchWaitsMs.map(String.init).joined(separator: "/")) ms"
+        let how = (plainText ? "plain text" : "SSML pieces") + ", a synthesizer per voice"
         DiagnosticLog.write("request #\(job.gen) \(status): waited \(ms(job.submitted, t0)) ms to start, first audio after \(firstAudio.map { "\(ms(t0, $0)) ms" } ?? "none"), done in \(ms(t0, Date())) ms, \(how)")
     }
 }

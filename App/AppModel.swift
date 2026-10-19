@@ -122,6 +122,8 @@ final class AppModel: ObservableObject {
     private(set) var lastPreview: [Float] = []
 
     private let voice = SystemVoice()
+    /// The secondary voice's own synthesizer, as in the extension.
+    private let otherVoice = SystemVoice()
     private let player = PCMPlayer()
     private let work = DispatchQueue(label: "voassist.app.work") // SystemVoice blocks: never on the main thread
     private var loudness: [String: Double] = [:] // measured level per Apple voice (work queue only)
@@ -301,9 +303,10 @@ final class AppModel: ObservableObject {
         let book = RuleBook(list ?? rules)
         previewStatus = "正在合成…"
         let ssml = VoiceOverRate.previewSSML(text, percent: voPercent)
-        work.async { [voice] in
+        work.async { [voice, otherVoice] in
             var out: [Float] = []
-            let status = BoostSynthesis.run(ssml: ssml, scheme: sc, settings: s, rules: book, voice: voice, isCancelled: { false }) { out += $0 }
+            let status = BoostSynthesis.runPieces(ssml: ssml, scheme: sc, settings: s, rules: book, main: voice, other: otherVoice,
+                                                  isCancelled: { false }) { out += $0 }
             DispatchQueue.main.async {
                 self.lastPreview = out
                 if status == .ok {
@@ -437,8 +440,8 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// How long the system voices take to switch voices in the middle of a sentence on this phone, and whether the
-    /// extension's player would keep going through it (it holds back while a switch is under way).
+    /// Whether the extension's player would keep going through a sentence that switches voices on this phone (each
+    /// voice has a synthesizer of its own, as in the extension).
     func measureSwitching(scheme: VoiceScheme, done: @escaping ([String]) -> Void) {
         guard scheme.secondary != nil else {
             DispatchQueue.main.async { done(["方案“\(scheme.name)”没有副语音，不用换声音"]) }
@@ -448,15 +451,14 @@ final class AppModel: ObservableObject {
         let book = RuleBook(rules)
         let text = VoiceScheme.secondaryReadsEnglish(main: scheme.main.lang) ? "打开 Safari 浏览器，然后连接 Wi-Fi 和 Bluetooth。"
                                                                                 : "Open 微信 and 设置, then 蓝牙."
-        work.async { [voice] in
+        work.async { [voice, otherVoice] in
             var lines = ["换声音（\(text)）："]
             for vo in [50.0, 100.0] {
                 var check = PlaybackCheck()
-                let status = BoostSynthesis.run(ssml: VoiceOverRate.previewSSML(text, percent: vo), scheme: scheme, settings: s, rules: book,
-                                                voice: voice, isCancelled: { false }, switching: { check.setSwitching($0) }) { check.add($0.count) }
+                let status = BoostSynthesis.runPieces(ssml: VoiceOverRate.previewSSML(text, percent: vo), scheme: scheme, settings: s,
+                                                      rules: book, main: voice, other: otherVoice, isCancelled: { false }) { check.add($0.count) }
                 check.finish()
-                let waits = voice.lastSwitchWaitsMs.map(String.init).joined(separator: "/")
-                lines.append(status == .ok ? "旁白 \(Int(vo))%：每次换声音用时 \(waits) ms；\(check.summary)" : "旁白 \(Int(vo))%：合成失败 \(status)")
+                lines.append(status == .ok ? "旁白 \(Int(vo))%：\(check.summary)" : "旁白 \(Int(vo))%：合成失败 \(status)")
             }
             DispatchQueue.main.async { done(lines) }
         }

@@ -7,10 +7,14 @@ import Foundation
 ///
 /// What changes on the way: the rate (VoiceOver's speed, capped at what the system voice can do, see `VoiceOverRate`), the
 /// text (reading rules; the other language wrapped in `<voice name="…">`, which the system voice switches to by itself),
-/// and language/voice tags of VoiceOver's are dropped (the scheme decides the voices).
+/// and language/voice tags of VoiceOver's are dropped (the scheme decides the voices). The same request also comes as
+/// `pieces`, one for each stretch of one voice, for a synthesizer per voice (`BoostSynthesis.runPieces`).
 public struct ApplePlan: Equatable {
     /// For `AVSpeechUtterance(ssmlRepresentation:)`.
     public var ssml: String
+    /// The request cut where the voices switch: each piece a whole SSML of its own for its voice alone (no `<voice>`),
+    /// the elements still open at a cut closed at its end and opened again at the start of the next.
+    public var pieces: [ApplePiece]
     /// The voices in the order the system voice reads them. It ends every stretch of one voice with an empty buffer
     /// (breaks and sentences do not), so the n-th stretch of audio belongs to `segments[n]`.
     public var segments: [RunVoice]
@@ -23,6 +27,16 @@ public struct ApplePlan: Equatable {
     /// Anything to say at all (else it is a spacer of breaks only).
     public var hasText: Bool
     /// The speed (x normal) the main voice reads at.
+    public var speed: Double
+}
+
+/// One voice's stretch of a request (`ApplePlan.pieces`).
+public struct ApplePiece: Equatable {
+    public var voice: RunVoice
+    public var ssml: String
+    /// Its words without the markup, and the speed (x normal) they start at: for reading it as plain text should the
+    /// system voice not take the SSML.
+    public var text: String
     public var speed: Double
 }
 
@@ -70,6 +84,30 @@ public enum ApplePlanner {
 
         func currentSpeed() -> Double { rateStack.last ?? 1 }
 
+        // the pieces: everything goes into the current one, and the elements open at a cut are closed there and opened
+        // again in the next
+        var pieces: [ApplePiece] = []
+        var body = ""
+        var bodyVoice: RunVoice?
+        var bodyText = ""
+        var bodySpeed = 1.0
+        var open: [(name: Substring, tag: String)] = []
+        func emit(_ t: String) { out += t; body += t }
+        func emitTag(_ t: String, name: Substring, lower: String) {
+            emit(t)
+            if lower.hasPrefix("</") {
+                if let i = open.lastIndex(where: { $0.name == name }) { open.removeSubrange(i...) }
+            } else if !lower.hasSuffix("/>") {
+                open.append((name, t))
+            }
+        }
+        func closePiece() {
+            guard let v = bodyVoice else { return }
+            pieces.append(ApplePiece(voice: v, ssml: body + open.reversed().map { "</\($0.name)>" }.joined(), text: bodyText, speed: bodySpeed))
+            body = open.map(\.tag).joined()
+            bodyText = ""
+        }
+
         for m in re.matches(in: ssml, range: NSRange(location: 0, length: ns.length)) {
             let tok = ns.substring(with: m.range)
             if tok.hasPrefix("<?") || tok.hasPrefix("<!") { continue } // declarations, comments
@@ -81,11 +119,11 @@ public enum ApplePlanner {
                     continue // the scheme decides the voices
                 case "speak":
                     if !lower.hasPrefix("</") { sawSpeak = true }
-                    out += withoutLang(tok)
+                    emitTag(withoutLang(tok), name: name, lower: lower)
                 case "prosody":
                     if lower.hasPrefix("</") {
                         if !rateStack.isEmpty { rateStack.removeLast() }
-                        out += tok
+                        emitTag(tok, name: name, lower: lower)
                     } else {
                         var t = withoutLang(tok)
                         var s = currentSpeed()
@@ -95,17 +133,17 @@ public enum ApplePlanner {
                             t = replacing(attribute: "rate", in: t, with: percent(s))
                         }
                         if !tok.hasSuffix("/>") { rateStack.append(s) }
-                        out += t
+                        emitTag(t, name: name, lower: lower)
                     }
                 case "break":
                     meaningful.append(true)
                     pauseAhead = true
-                    out += tok
+                    emitTag(tok, name: name, lower: lower)
                 case "s", "p":
                     pauseAhead = true
-                    out += withoutLang(tok)
+                    emitTag(withoutLang(tok), name: name, lower: lower)
                 default:
-                    out += withoutLang(tok)
+                    emitTag(withoutLang(tok), name: name, lower: lower)
                 }
                 continue
             }
@@ -117,7 +155,7 @@ public enum ApplePlanner {
                 if !text.isEmpty && !runs.isEmpty { spaceAhead = true }
                 continue
             }
-            if spaceAhead { out += " "; spaceAhead = false }
+            if spaceAhead { emit(" "); spaceAhead = false }
             let t = scheme.prepared(text, rules: rules)
             guard !t.isEmpty else { continue }
             meaningful.append(false)
@@ -130,21 +168,35 @@ public enum ApplePlanner {
                 if let lang = reader, !LanguageRuns.isChinese(lang) { text = LanguageRuns.westernPunctuation(text) }
                 runs.append((p.voice, text, pauseAhead && !runs.isEmpty))
                 pauseAhead = false
+                if bodyVoice != p.voice {
+                    closePiece()
+                    bodyVoice = p.voice
+                    bodySpeed = currentSpeed()
+                }
+                bodyText += text
                 if p.voice == .other, let id = secondaryID {
                     let rel = scheme.secondaryRate
                     if abs(rel - 1) > 0.001 {
                         // nested rates are absolute for the system voice (measured): the main speed times the relative one
                         let s = min(currentSpeed() * rel, map.maxMultiplier)
+                        if bodyText == text { bodySpeed = s }
                         out += "<voice name=\"\(id)\"><prosody rate=\"\(percent(s))\">\(encode(text))</prosody></voice>"
+                        body += "<prosody rate=\"\(percent(s))\">\(encode(text))</prosody>"
                     } else {
                         out += "<voice name=\"\(id)\">\(encode(text))</voice>"
+                        body += encode(text)
                     }
                 } else {
-                    out += encode(text)
+                    emit(encode(text))
                 }
             }
         }
-        if !sawSpeak { out = "<speak>\(out)</speak>" }
+        if bodyVoice == nil { bodyVoice = .main } // nothing to say: one piece of breaks only, read by the main voice
+        closePiece()
+        if !sawSpeak {
+            out = "<speak>\(out)</speak>"
+            for i in pieces.indices { pieces[i].ssml = "<speak>\(pieces[i].ssml)</speak>" }
+        }
 
         // the stretches as the system voice splits them: consecutive runs of one voice are one
         var segs: [(voice: RunVoice, text: String, pauseBefore: Bool)] = []
@@ -157,7 +209,7 @@ public enum ApplePlanner {
             segs[i + 1].pauseBefore ? nil : switchPause(after: segs[i].text, speed: mainSpeed)
         }
         let hasText = runs.contains { $0.text.contains { $0.isLetter || $0.isNumber } }
-        return ApplePlan(ssml: out, segments: segs.map(\.voice), switchCapMs: caps,
+        return ApplePlan(ssml: out, pieces: pieces, segments: segs.map(\.voice), switchCapMs: caps,
                          keepLeading: meaningful.first ?? false, keepTrailing: meaningful.last ?? false,
                          hasText: hasText, speed: mainSpeed)
     }

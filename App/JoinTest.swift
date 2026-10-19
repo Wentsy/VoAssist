@@ -35,6 +35,24 @@ enum JoinTest {
                     print("JT   婷婷 alone \(describe(alone))")
                 }
             }
+            // iOS 27 requests (a whole item, its parts in <s>): one synthesizer switching voices, and a piece per voice
+            let main2 = SystemVoice()
+            main2.warmUp(.tingting)
+            for ssml in [#"<speak><prosody rate="100%"><s>App Store</s><s><break time="800ms"/></s><s>轻点两下以打开</s></prosody></speak>"#,
+                         #"<speak><prosody rate="100%"><s>Safari</s><s>按钮</s></prosody></speak>"#,
+                         #"<speak><prosody rate="100%"><s>设置</s><s>按钮</s></prosody></speak>"#,
+                         #"<speak><prosody rate="250%"><s>打开 Safari 浏览器</s><s>按钮</s><s><break time="800ms"/></s><s>轻点两下以打开 App Store</s></prosody></speak>"#] {
+                var scheme = VoiceScheme.defaultTingting
+                scheme.boost = 1
+                var oneSynth: [Float] = [], pieces: [Float] = []
+                _ = BoostSynthesis.run(ssml: ssml, scheme: scheme, settings: BoostSettings(), rules: RuleBook([]), voice: both,
+                                       isCancelled: { false }) { oneSynth += $0 }
+                _ = BoostSynthesis.runPieces(ssml: ssml, scheme: scheme, settings: BoostSettings(), rules: RuleBook([]), main: main2,
+                                             other: other, isCancelled: { false }) { pieces += $0 }
+                print("JT 27 \(ssml.replacingOccurrences(of: "<[^>]+>", with: "|", options: .regularExpression).replacingOccurrences(of: "\\|+", with: "|", options: .regularExpression))")
+                print("JT   one synth  \(describe(oneSynth))")
+                print("JT   pieces     \(describe(pieces))")
+            }
             // how the system voice splits an SSML that switches voices into stretches (an empty buffer ends each)
             if let samantha = both.resolve(.samantha) {
                 for ssml in ["<speak><voice name=\"\(samantha.identifier)\">Hello, </voice>世界</speak>",
