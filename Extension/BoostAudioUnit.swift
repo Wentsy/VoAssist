@@ -290,6 +290,7 @@ public class BoostAudioUnit: AVSpeechSynthesisProviderAudioUnit {
                 case "rateBench": CPUBench.rates()
                 case "mixBench": CPUBench.mixed()
                 case "cacheBench": CPUBench.cached()
+                case "placeBench": CPUBench.placement()
                 #endif
                 default: super.fullState = newValue
                 }

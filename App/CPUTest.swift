@@ -38,7 +38,7 @@ enum CPUTest {
         }.start()
     }
 
-    /// `-cpuBench` (`-rateBench`, `-mixBench`, `-cacheBench`): has the voice extension measure itself (`CPUBench` there)
+    /// `-cpuBench` (`-rateBench`, `-mixBench`, `-cacheBench`, `-placeBench`): has the voice extension measure itself (`CPUBench` there)
     /// and prints its "bench" lines. The log has to be on (`-logOn`).
     static func bench(_ command: String) {
         AUAudioUnit.instantiate(with: extensionComponent, options: .loadOutOfProcess) { au, _ in

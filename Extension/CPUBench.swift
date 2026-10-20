@@ -207,6 +207,52 @@ enum CPUBench {
         }.start()
     }
 
+    /// `placeBench`: where the system voice's work runs (the share on the performance cores) and what it costs, with the
+    /// synthesizer made and used on a thread of each QoS, and with this process's main thread (where the synthesizer
+    /// reports) lowered as well. VoiceOver's own voice process runs the same frameworks mostly on the efficiency cores.
+    static func placement() {
+        let texts = ["张三，明天的会议改到下午三点，记得带电脑", "打开设置按钮", "今天下午三点在会议室开会，请大家准时参加，带上上周的报告和电脑。"]
+        let scheme = VoiceScheme.shared().first { LanguageRuns.isChinese($0.language) } ?? VoiceScheme.defaultTingting
+        let rate = AVSpeechUtteranceMaximumSpeechRate
+        func run(_ label: String, _ qos: qos_class_t) {
+            let done = DispatchSemaphore(value: 0)
+            Thread {
+                pthread_set_qos_class_self_np(qos, 0)
+                let sv = SystemVoice()
+                if let v = sv.resolve(scheme.main) {
+                    _ = sv.speak(texts[0], voice: v, rate: rate, pitch: 1, isCancelled: { false }) { _ in } // loaded
+                    var firsts: [Double] = []
+                    measure(label) { got in
+                        for t in texts {
+                            let t0 = Date()
+                            var first: Double?
+                            _ = sv.speak(t, voice: v, rate: rate, pitch: 1, isCancelled: { false }) {
+                                if first == nil { first = Date().timeIntervalSince(t0) }
+                                got += $0.count
+                            }
+                            firsts.append(first ?? 0)
+                        }
+                    }
+                    DiagnosticLog.write(String(format: "bench   first sound after %.1f ms on average", firsts.reduce(0, +) / Double(max(firsts.count, 1)) * 1000))
+                }
+                done.signal()
+            }.start()
+            done.wait()
+        }
+        Thread {
+            run("made and read at user-initiated", QOS_CLASS_USER_INITIATED)
+            run("made and read at utility", QOS_CLASS_UTILITY)
+            run("made and read at background", QOS_CLASS_BACKGROUND)
+            let lowered = DispatchQueue.main.sync { pthread_set_qos_class_self_np(QOS_CLASS_UTILITY, 0) }
+            DiagnosticLog.write("bench: main thread to utility: \(lowered == 0 ? "done" : "refused (\(lowered))")")
+            run("main thread at utility, made and read at user-initiated", QOS_CLASS_USER_INITIATED)
+            run("main thread at utility, made and read at utility", QOS_CLASS_UTILITY)
+            _ = DispatchQueue.main.sync { pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0) }
+            run("made and read at user-initiated", QOS_CLASS_USER_INITIATED)
+            DiagnosticLog.write("bench: done")
+        }.start()
+    }
+
     /// Runs `body` 20 times; logs the process's processor time and energy per run, the share of that time on the
     /// performance cores, and the sound it made.
     private static func measure(_ what: String, _ body: (inout Int) -> Void) {
