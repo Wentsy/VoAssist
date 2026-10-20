@@ -506,8 +506,9 @@ extension BoostSynthesis {
     /// One synthesizer switching voices inside an utterance took 3-27 ms per switch on an iPhone Air, and the player held
     /// back 300 ms of sound before starting a request with a switch ahead, lest it ran dry while the voice changed: mixed
     /// items sounded after 58-70 ms against 24-48 ms. A piece starts on an idle synthesizer with its voice loaded.
+    /// Short pieces read before come from `cache`, if given.
     public static func runPieces(ssml: String, scheme: VoiceScheme, settings s: BoostSettings, rules: RuleBook,
-                                 main mainSynth: SystemVoice, other otherSynth: SystemVoice,
+                                 main mainSynth: SystemVoice, other otherSynth: SystemVoice, cache: SoundCache? = nil,
                                  isCancelled: () -> Bool, emit: ([Float]) -> Void) -> Status {
         let sr = SystemVoice.sampleRate
         let map = s.effectiveRateMap
@@ -531,18 +532,26 @@ extension BoostSynthesis {
                 if other && otherGain != 1 { applyGain(&x, otherGain) }
                 emit(proc.push(x))
             }
-            var outcome = synth.speak(ssml: piece.ssml, voice: voice, stretches: 1, isCancelled: isCancelled) { pcm, _ in take(pcm) }
-            if outcome == .rejected, LanguageRuns.speakable(piece.text) {
-                // the system voice did not take the piece as rewritten: its words, plainly
-                outcome = synth.speak(piece.text, voice: voice, rate: map.rate(for: min(piece.speed, map.maxMultiplier)), pitch: pitch,
-                                      isCancelled: isCancelled) { take($0) }
-            }
-            switch outcome {
-            case .cancelled: return .cancelled
-            case .timedOut:
-                emit(proc.finish())
-                return .timedOut
-            case .done, .rejected: break
+            let key = cache == nil ? nil : SoundCache.key(piece.text, voice: voice.identifier, reading: piece.ssml)
+            if cache?.play(key, take) != true {
+                var heard: [[Float]] = []
+                let read = synth.speak(ssml: piece.ssml, voice: voice, stretches: 1, isCancelled: isCancelled) { pcm, _ in
+                    if key != nil { heard.append(pcm) }
+                    take(pcm)
+                }
+                var outcome = read
+                if outcome == .rejected, LanguageRuns.speakable(piece.text) {
+                    // the system voice did not take the piece as rewritten: its words, plainly
+                    outcome = synth.speak(piece.text, voice: voice, rate: map.rate(for: min(piece.speed, map.maxMultiplier)), pitch: pitch,
+                                          isCancelled: isCancelled) { take($0) }
+                }
+                switch outcome {
+                case .cancelled: return .cancelled
+                case .timedOut:
+                    emit(proc.finish())
+                    return .timedOut
+                case .done, .rejected: if read == .done, let k = key { cache?.keep(k, heard) }
+                }
             }
             if i < plan.pieces.count - 1, i < plan.switchCapMs.count { emit(proc.endStretch(capMs: plan.switchCapMs[i])) }
         }
@@ -560,8 +569,9 @@ extension BoostSynthesis {
     /// a request is read stretch by stretch, each language's stretches by a synthesizer of its own (`main`, `other`), as
     /// plain utterances. VoiceOver's requests there are short and simple (a name; at times a break and a second part;
     /// `<prosody volume pitch>`, a rate only away from VoiceOver's default one), so `SSML.parse` has all of it.
+    /// Short stretches read before come from `cache`, if given.
     public static func runPerVoice(ssml: String, scheme: VoiceScheme, settings s: BoostSettings, rules: RuleBook,
-                                   main mainSynth: SystemVoice, other otherSynth: SystemVoice,
+                                   main mainSynth: SystemVoice, other otherSynth: SystemVoice, cache: SoundCache? = nil,
                                    isCancelled: () -> Bool, emit: ([Float]) -> Void) -> Status {
         let sr = SystemVoice.sampleRate
         let map = s.effectiveRateMap
@@ -587,19 +597,27 @@ extension BoostSynthesis {
                     var words = runs.count > 1 ? LanguageRuns.lowercasingLoneCapital(run.text) : run.text
                     let reader = other ? scheme.secondary?.lang : scheme.main.lang
                     if let lang = reader, !LanguageRuns.isChinese(lang) { words = LanguageRuns.westernPunctuation(words) }
-                    let outcome = (other ? otherSynth : mainSynth).speak(words, voice: other ? otherVoice! : mainVoice,
-                                                                          rate: other ? otherRate : mainRate, pitch: request.pitch,
-                                                                          isCancelled: isCancelled) { pcm in
+                    let voice = other ? otherVoice! : mainVoice, rate = other ? otherRate : mainRate
+                    func take(_ pcm: [Float]) {
                         var x = pcm
                         if other && otherGain != 1 { applyGain(&x, otherGain) }
                         emit(proc.push(x))
                     }
-                    switch outcome {
-                    case .cancelled: return .cancelled
-                    case .timedOut, .rejected:
-                        emit(proc.finish())
-                        return .timedOut
-                    case .done: break
+                    let key = cache == nil ? nil : SoundCache.key(words, voice: voice.identifier, reading: "\(rate) \(request.pitch)")
+                    if cache?.play(key, take) != true {
+                        var heard: [[Float]] = []
+                        let outcome = (other ? otherSynth : mainSynth).speak(words, voice: voice, rate: rate, pitch: request.pitch,
+                                                                              isCancelled: isCancelled) { pcm in
+                            if key != nil { heard.append(pcm) }
+                            take(pcm)
+                        }
+                        switch outcome {
+                        case .cancelled: return .cancelled
+                        case .timedOut, .rejected:
+                            emit(proc.finish())
+                            return .timedOut
+                        case .done: if let k = key { cache?.keep(k, heard) }
+                        }
                     }
                     // where the voices change: the pause its punctuation asks for, else none (as `ApplePlan.switchCapMs`)
                     if i < runs.count - 1 { emit(proc.endStretch(capMs: ApplePlanner.switchPause(after: words, speed: speed))) }

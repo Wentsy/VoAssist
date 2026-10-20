@@ -337,3 +337,44 @@ final class AudioRingTests: XCTestCase {
         XCTAssertEqual(ring.previousPlayback()?.complete, true)
     }
 }
+
+final class SoundCacheTests: XCTestCase {
+    private func played(_ cache: SoundCache, _ key: String) -> [[Float]]? {
+        var blocks: [[Float]] = []
+        return cache.play(key) { blocks.append($0) } ? blocks : nil
+    }
+
+    func testPlaysTheSixteenBitSamplesInTheirBlocks() {
+        let cache = SoundCache()
+        let blocks: [[Float]] = [[0, 1 / 32768], [], [-1, 12345 / 32768, -20000 / 32768]]
+        let k = SoundCache.key("按钮", voice: "v", reading: "0.5 1")!
+        XCTAssertNil(played(cache, k))
+        cache.keep(k, blocks)
+        XCTAssertEqual(played(cache, k), blocks)
+        XCTAssertEqual(cache.counts.hits, 1)
+        XCTAssertEqual(cache.counts.misses, 1)
+        XCTAssertFalse(cache.play(nil) { _ in })
+    }
+
+    func testKeyTellsVoicesAndReadingsApart() {
+        let a = SoundCache.key("Safari", voice: "v", reading: "0.5 1")
+        XCTAssertNotEqual(a, SoundCache.key("Safari", voice: "w", reading: "0.5 1"))
+        XCTAssertNotEqual(a, SoundCache.key("Safari", voice: "v", reading: "0.6 1"))
+        XCTAssertNotEqual(a, SoundCache.key("safari", voice: "v", reading: "0.5 1"))
+        XCTAssertNil(SoundCache.key(String(repeating: "长", count: SoundCache.maxCharacters + 1), voice: "v", reading: "0.5 1"))
+    }
+
+    func testDropsTheLeastRecentlyUsedFirst() {
+        let cache = SoundCache()
+        let size = SoundCache.maxSamples / 8
+        let pcm = [[Float](repeating: 0.25, count: size)]
+        for i in 0..<8 { cache.keep("k\(i)", pcm) }
+        XCTAssertNotNil(played(cache, "k0")) // now the most recently used
+        cache.keep("k8", pcm)
+        XCTAssertNotNil(played(cache, "k0"))
+        XCTAssertNil(played(cache, "k1"))
+        XCTAssertNotNil(played(cache, "k8"))
+        cache.keep("too long", [[Float](repeating: 0, count: size + 1)])
+        XCTAssertNil(played(cache, "too long"))
+    }
+}

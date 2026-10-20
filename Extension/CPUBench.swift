@@ -84,22 +84,180 @@ enum CPUBench {
         }.start()
     }
 
-    /// Runs `body` 20 times; logs the process's processor time per run and the sound it made.
+    /// `rateBench`: the same request at the same final speed, the voice reading it at VoiceOver's normal rate and boosted
+    /// by Sonic, or reading it faster itself and boosted less: what the voice's speed saves.
+    static func rates() {
+        Thread {
+            let long = "今天下午三点在会议室开会，请大家准时参加，带上上周的报告和电脑。"
+            let base = VoiceScheme.shared().first { LanguageRuns.isChinese($0.language) } ?? VoiceScheme.defaultTingting
+            let main = SystemVoice(), other = SystemVoice()
+            main.warmUp(base.main)
+            if let sec = base.secondary { other.warmUp(sec) }
+            let total = 4.5
+            for voiceSpeed in [1.0, 1.5, 2.0, 3.0, 4.0] {
+                var s = base
+                s.boost = max(total / voiceSpeed, 1)
+                let ssml = "<speak><prosody rate=\"\(Int(voiceSpeed * 100))%\">\(long)</prosody></speak>"
+                measure(String(format: "voice at %.1fx, boost %.2f", voiceSpeed, s.boost)) { got in
+                    var n = 0
+                    if BoostAudioUnit.beforeIOS27 {
+                        _ = BoostSynthesis.runPerVoice(ssml: ssml, scheme: s, settings: BoostSettings.shared(), rules: RuleBook.shared(),
+                                                       main: main, other: other, isCancelled: { false }) { n += $0.count }
+                    } else {
+                        _ = BoostSynthesis.runPieces(ssml: ssml, scheme: s, settings: BoostSettings.shared(), rules: RuleBook.shared(),
+                                                     main: main, other: other, isCancelled: { false }) { n += $0.count }
+                    }
+                    got += n
+                }
+            }
+            DiagnosticLog.write("bench: done")
+        }.start()
+    }
+
+    /// `mixBench`: VoiceOver-like requests that mix Chinese and English, without boost, at VoiceOver's normal and fastest
+    /// rate, read as the extension reads them (a piece per voice) and by the main voice alone (as VoiceOver's own voice
+    /// would read them, the English included).
+    static func mixed() {
+        Thread {
+            let items: [[String]] = [["打开Safari浏览器", "按钮"], ["张三：明天的 meeting 改到 3 点，记得带 MacBook 和 iPad。"],
+                                     ["微信 WeChat，有 5 条未读消息"], ["Wi-Fi 设置", "按钮"], ["今天下午三点在会议室开会", "按钮"]]
+            var scheme = VoiceScheme.shared().first { LanguageRuns.isChinese($0.language) && $0.secondary != nil } ?? VoiceScheme.defaultTingting
+            scheme.boost = 1
+            var alone = scheme
+            alone.secondary = nil
+            // split by language as with two voices, but the main voice reads the other pieces too
+            var split = scheme
+            split.secondary = scheme.main
+            let main = SystemVoice(), other = SystemVoice(), twin = SystemVoice()
+            main.warmUp(scheme.main)
+            twin.warmUp(scheme.main)
+            if let sec = scheme.secondary { other.warmUp(sec) }
+            DiagnosticLog.write("bench: \(scheme.main.id) + \(scheme.secondary?.id ?? "none")")
+            for rate in [100, 400] {
+                let requests = items.map { parts in
+                    "<speak><prosody rate=\"\(rate)%\">" + parts.map { "<s><lang xml:lang=\"cmn-CN\">\($0)</lang></s>" }.joined() + "</prosody></speak>"
+                }
+                for (label, s, o) in [("two voices", scheme, other), ("split, main voice", split, twin), ("main voice alone", alone, other),
+                                      ("two voices", scheme, other), ("split, main voice", split, twin), ("main voice alone", alone, other)] {
+                    measure("\(items.count) items at \(rate)%, \(label)") { got in
+                        var n = 0
+                        for r in requests {
+                            if BoostAudioUnit.beforeIOS27 {
+                                _ = BoostSynthesis.runPerVoice(ssml: r, scheme: s, settings: BoostSettings.shared(), rules: RuleBook.shared(),
+                                                               main: main, other: o, isCancelled: { false }) { n += $0.count }
+                            } else {
+                                _ = BoostSynthesis.runPieces(ssml: r, scheme: s, settings: BoostSettings.shared(), rules: RuleBook.shared(),
+                                                             main: main, other: o, isCancelled: { false }) { n += $0.count }
+                            }
+                        }
+                        got += n
+                    }
+                }
+            }
+            DiagnosticLog.write("bench: done")
+        }.start()
+    }
+
+    /// The sound cache: the mixed items of `mixed` with two voices, each read again and again, with and without it; and
+    /// whether what comes from it sounds exactly like reading anew.
+    static func cached() {
+        Thread {
+            let items: [[String]] = [["打开Safari浏览器", "按钮"], ["张三：明天的 meeting 改到 3 点，记得带 MacBook 和 iPad。"],
+                                     ["微信 WeChat，有 5 条未读消息"], ["Wi-Fi 设置", "按钮"], ["今天下午三点在会议室开会", "按钮"]]
+            var scheme = VoiceScheme.shared().first { LanguageRuns.isChinese($0.language) && $0.secondary != nil } ?? VoiceScheme.defaultTingting
+            scheme.boost = 1
+            let main = SystemVoice(), other = SystemVoice()
+            main.warmUp(scheme.main)
+            if let sec = scheme.secondary { other.warmUp(sec) }
+            for rate in [100, 400] {
+                let requests = items.map { parts in
+                    "<speak><prosody rate=\"\(rate)%\">" + parts.map { "<s><lang xml:lang=\"cmn-CN\">\($0)</lang></s>" }.joined() + "</prosody></speak>"
+                }
+                func read(_ cache: SoundCache?, boost: Double = 1) -> [Float] {
+                    var out: [Float] = []
+                    var s = scheme
+                    s.boost = boost
+                    for r in requests {
+                        if BoostAudioUnit.beforeIOS27 {
+                            _ = BoostSynthesis.runPerVoice(ssml: r, scheme: s, settings: BoostSettings.shared(), rules: RuleBook.shared(),
+                                                           main: main, other: other, cache: cache, isCancelled: { false }) { out += $0 }
+                        } else {
+                            _ = BoostSynthesis.runPieces(ssml: r, scheme: s, settings: BoostSettings.shared(), rules: RuleBook.shared(),
+                                                         main: main, other: other, cache: cache, isCancelled: { false }) { out += $0 }
+                        }
+                    }
+                    return out
+                }
+                func differ(_ a: [Float], _ b: [Float]) -> String {
+                    a.count != b.count ? "\(a.count) vs \(b.count) samples" : String(format: "largest difference %.6f", zip(a, b).map { abs($0 - $1) }.max() ?? 0)
+                }
+                let cache = SoundCache()
+                let plain = read(nil), again = read(nil), first = read(cache), kept = read(cache)
+                DiagnosticLog.write("bench \(rate)%: read twice: \(differ(plain, again)); with the cache, first time: \(differ(plain, first)); from the cache: \(differ(plain, kept))")
+                // sped up: the sound from the cache goes through Sonic in other blocks than the voice's
+                let fast = read(nil, boost: 4.5), fastKept = read(cache, boost: 4.5)
+                DiagnosticLog.write("bench \(rate)%, boost 4.5: from the cache: \(differ(fast, fastKept))")
+                for (label, c) in [("no cache", nil), ("cache", cache), ("no cache", nil), ("cache", cache)] as [(String, SoundCache?)] {
+                    measure("\(items.count) items at \(rate)%, \(label)") { got in
+                        got += read(c).count
+                    }
+                }
+            }
+            DiagnosticLog.write("bench: done")
+        }.start()
+    }
+
+    /// Runs `body` 20 times; logs the process's processor time and energy per run, the share of that time on the
+    /// performance cores, and the sound it made.
     private static func measure(_ what: String, _ body: (inout Int) -> Void) {
         let n = 20
         var sound = 0
-        let c0 = cpuSeconds(), t0 = Date()
+        let u0 = Usage(), t0 = Date()
         for _ in 0..<n { body(&sound) }
-        let cpu = (cpuSeconds() - c0) * 1000 / Double(n)
+        let d = Usage().minus(u0)
         let wall = Date().timeIntervalSince(t0) * 1000 / Double(n)
-        DiagnosticLog.write(String(format: "bench %@: %.1f ms CPU, %.1f ms wall per run", what, cpu, wall)
-            + (sound > 0 ? String(format: ", %.2f s of sound", Double(sound / n) / Double(SystemVoice.sampleRate)) : ""))
+        DiagnosticLog.write(String(format: "bench %@: %.1f ms CPU (%.0f%% on P cores), %.2f mJ, %.1f ms wall per run",
+                                   what, d.cpu * 1000 / Double(n), d.pShare * 100, d.energy * 1000 / Double(n), wall)
+            + (sound > 0 ? String(format: ", %.2f s of sound", Double(sound / n) / Double(SystemVoice.sampleRate)) : "")
+            + ", by QoS " + d.byQoS)
     }
 
-    private static func cpuSeconds() -> Double {
-        var u = rusage()
-        getrusage(RUSAGE_SELF, &u)
-        return Double(u.ru_utime.tv_sec + u.ru_stime.tv_sec) + Double(u.ru_utime.tv_usec + u.ru_stime.tv_usec) / 1e6
+    /// The process's counters (`proc_pid_rusage`, not in the iOS headers).
+    private struct Usage {
+        var cpu = 0.0, pCPU = 0.0, energy = 0.0 // s, s, J
+        var qos: [(String, Double)] = []
+
+        init() {
+            var ri = rusage_info_v6()
+            let ok = withUnsafeMutablePointer(to: &ri) { procPidRusage(getpid(), 6 /* RUSAGE_INFO_V6 */, UnsafeMutableRawPointer($0)) } == 0
+            guard ok else { return }
+            var tb = mach_timebase_info_data_t()
+            mach_timebase_info(&tb)
+            func sec(_ t: UInt64) -> Double { Double(t) * Double(tb.numer) / Double(tb.denom) / 1e9 }
+            cpu = sec(ri.ri_user_time + ri.ri_system_time)
+            pCPU = sec(ri.ri_user_ptime + ri.ri_system_ptime)
+            energy = Double(ri.ri_energy_nj) / 1e9
+            qos = [("UI", ri.ri_cpu_time_qos_user_interactive), ("IN", ri.ri_cpu_time_qos_user_initiated),
+                   ("DEF", ri.ri_cpu_time_qos_default), ("UT", ri.ri_cpu_time_qos_utility),
+                   ("BG", ri.ri_cpu_time_qos_background), ("MT", ri.ri_cpu_time_qos_maintenance),
+                   ("LEG", ri.ri_cpu_time_qos_legacy)].map { ($0.0, sec($0.1)) }
+        }
+
+        func minus(_ o: Usage) -> Usage {
+            var d = self
+            d.cpu -= o.cpu; d.pCPU -= o.pCPU; d.energy -= o.energy
+            d.qos = zip(qos, o.qos).map { ($0.0, $0.1 - $1.1) }
+            return d
+        }
+
+        var pShare: Double { cpu > 0 ? pCPU / cpu : 0 }
+        var byQoS: String {
+            let total = qos.reduce(0) { $0 + $1.1 }
+            return qos.filter { $0.1 > total * 0.02 }.map { String(format: "%@ %.0f%%", $0.0, $0.1 / max(total, 1e-9) * 100) }.joined(separator: " ")
+        }
     }
 }
+
+@_silgen_name("proc_pid_rusage")
+private func procPidRusage(_ pid: Int32, _ flavor: Int32, _ buffer: UnsafeMutableRawPointer) -> Int32
 #endif

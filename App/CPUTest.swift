@@ -38,14 +38,14 @@ enum CPUTest {
         }.start()
     }
 
-    /// `-cpuBench`: has the voice extension measure itself (`CPUBench` there) and prints its "bench" lines. The log has
-    /// to be on (`-logOn`).
-    static func bench() {
+    /// `-cpuBench` (`-rateBench`, `-mixBench`, `-cacheBench`): has the voice extension measure itself (`CPUBench` there)
+    /// and prints its "bench" lines. The log has to be on (`-logOn`).
+    static func bench(_ command: String) {
         AUAudioUnit.instantiate(with: extensionComponent, options: .loadOutOfProcess) { au, _ in
             guard let au = au else { print("CT cannot load the extension"); return }
             Thread {
                 au.fullState = [DiagnosticLog.commandKey: "clearLog"]
-                au.fullState = [DiagnosticLog.commandKey: "cpuBench"]
+                au.fullState = [DiagnosticLog.commandKey: command]
                 var seen = 0
                 for _ in 0..<120 {
                     Thread.sleep(forTimeInterval: 2)

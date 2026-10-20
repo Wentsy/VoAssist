@@ -141,7 +141,10 @@ struct ContentView: View {
             if args.contains("-voiceCompare") { setvbuf(stdout, nil, _IOLBF, 0); VoiceCompare.run() }
             if args.contains("-latency") { LatencyProbe.run() }
             if args.contains("-cpuTest") { setvbuf(stdout, nil, _IOLBF, 0); CPUTest.run() }
-            if args.contains("-cpuBench") { setvbuf(stdout, nil, _IOLBF, 0); CPUTest.bench() }
+            if args.contains("-cpuBench") { setvbuf(stdout, nil, _IOLBF, 0); CPUTest.bench("cpuBench") }
+            if args.contains("-rateBench") { setvbuf(stdout, nil, _IOLBF, 0); CPUTest.bench("rateBench") }
+            if args.contains("-mixBench") { setvbuf(stdout, nil, _IOLBF, 0); CPUTest.bench("mixBench") }
+            if args.contains("-cacheBench") { setvbuf(stdout, nil, _IOLBF, 0); CPUTest.bench("cacheBench") }
             if args.contains("-stallTest") { setvbuf(stdout, nil, _IOLBF, 0); StallTest.run() }
             if args.contains("-joinTest") { setvbuf(stdout, nil, _IOLBF, 0); JoinTest.run() }
             if args.contains("-interruptTest") { setvbuf(stdout, nil, _IOLBF, 0); InterruptTest.run() }

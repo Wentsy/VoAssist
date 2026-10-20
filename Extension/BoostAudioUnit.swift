@@ -179,9 +179,9 @@ final class SynthWorker {
         }
         let status = plainText
             ? BoostSynthesis.runPerVoice(ssml: job.ssml, scheme: job.scheme, settings: settings, rules: RuleBook.shared(),
-                                         main: voice, other: otherVoice, isCancelled: { ring.generation != gen }, emit: out)
+                                         main: voice, other: otherVoice, cache: SoundCache.shared, isCancelled: { ring.generation != gen }, emit: out)
             : BoostSynthesis.runPieces(ssml: job.ssml, scheme: job.scheme, settings: settings, rules: RuleBook.shared(),
-                                       main: voice, other: otherVoice, isCancelled: { ring.generation != gen }, emit: out)
+                                       main: voice, other: otherVoice, cache: SoundCache.shared, isCancelled: { ring.generation != gen }, emit: out)
         if status != .ok && status != .cancelled {
             log.error("request failed: \(String(describing: status), privacy: .public) voice \(job.scheme.main.id, privacy: .public)")
         }
@@ -201,7 +201,8 @@ final class SynthWorker {
         if DiagnosticLog.recordsSpeech { DiagnosticLog.write("request #\(job.gen) ssml: \(job.ssml.prefix(800))") }
         DiagnosticLog.write("request #\(job.gen) for \(job.voice)")
         DiagnosticLog.write("request #\(job.gen) \"\(s.name)\": main \(voices(s.main)), secondary \(voices(s.secondary)); VoiceOver rate \(Int((request.rate * 100).rounded()))%, boost \(s.boost), numbers \(s.numbers.rawValue), rules \(s.useRules ? "on" : "off"); \(DiagnosticLog.speech(request.segments.map(\.text).joined(separator: " ")))")
-        let how = (plainText ? "plain text" : "SSML pieces") + ", a synthesizer per voice"
+        let cache = SoundCache.shared.counts
+        let how = (plainText ? "plain text" : "SSML pieces") + ", a synthesizer per voice, sound cache \(cache.hits) hits / \(cache.misses) misses so far"
         DiagnosticLog.write("request #\(job.gen) \(status): waited \(ms(job.submitted, t0)) ms to start, first audio after \(firstAudio.map { "\(ms(t0, $0)) ms" } ?? "none"), done in \(ms(t0, Date())) ms, \(how)")
     }
 }
@@ -286,6 +287,9 @@ public class BoostAudioUnit: AVSpeechSynthesisProviderAudioUnit {
                 case "clearLog": DiagnosticLog.clear()
                 #if DEBUG
                 case "cpuBench": CPUBench.run()
+                case "rateBench": CPUBench.rates()
+                case "mixBench": CPUBench.mixed()
+                case "cacheBench": CPUBench.cached()
                 #endif
                 default: super.fullState = newValue
                 }
