@@ -127,6 +127,12 @@ struct ContentView: View {
             // development: switch the diagnostic log on (with what is read), empty it, print it
             if args.contains("-logOn") { model.setLogging(true) }
             if args.contains("-logSpeech") { model.settings.logSpeech = true }
+            // development: `-boost <x>` sets the first scheme's boost
+            if let i = args.firstIndex(of: "-boost"), i + 1 < args.count, let b = Double(args[i + 1]), var s = model.schemes.first {
+                print("BOOST \(s.name): \(s.boost) -> \(b)")
+                s.boost = b
+                model.save(s)
+            }
             if args.contains("-clearLog") { model.clearDiagnostics { ok in print("LOG cleared: \(ok)") } }
             if args.contains("-printLog") {
                 Task {
