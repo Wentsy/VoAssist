@@ -253,10 +253,136 @@ enum CPUBench {
         }.start()
     }
 
-    /// Runs `body` 20 times; logs the process's processor time and energy per run, the share of that time on the
+    /// `bgBench`: the system voice's work with this whole process put back. A process cannot put itself in the background
+    /// state (`setpriority(PRIO_DARWIN_PROCESS)`: not permitted) or take the background role (`TASK_CATEGORY_POLICY`:
+    /// refused), but it can lower its latency and throughput QoS tiers (`TASK_BASE_QOS_POLICY`). Each pair of tiers from
+    /// the start, and from the first sound on (VoiceOver's own voice process: a quick start, the rest slowly): the cost,
+    /// where it ran, the first sound and how long all of it took.
+    static func background() {
+        Thread {
+            let texts = ["张三，明天的会议改到下午三点，记得带电脑", "打开设置按钮", "今天下午三点在会议室开会，请大家准时参加，带上上周的报告和电脑。"]
+            let scheme = VoiceScheme.shared().first { LanguageRuns.isChinese($0.language) } ?? VoiceScheme.defaultTingting
+            let rate = AVSpeechUtteranceMaximumSpeechRate
+            let sv = SystemVoice()
+            guard let v = sv.resolve(scheme.main) else { DiagnosticLog.write("bench: done"); return }
+            _ = sv.speak(texts[0], voice: v, rate: rate, pitch: 1, isCancelled: { false }) { _ in } // loaded
+            let tiers: [(String, task_latency_qos, task_throughput_qos)] = [
+                ("as usual", LATENCY_QOS_TIER_UNSPECIFIED, THROUGHPUT_QOS_TIER_UNSPECIFIED),
+                ("latency 1", LATENCY_QOS_TIER_1, THROUGHPUT_QOS_TIER_UNSPECIFIED),
+                ("latency 2", LATENCY_QOS_TIER_2, THROUGHPUT_QOS_TIER_UNSPECIFIED),
+                ("latency 3", LATENCY_QOS_TIER_3, THROUGHPUT_QOS_TIER_UNSPECIFIED),
+                ("latency 4", LATENCY_QOS_TIER_4, THROUGHPUT_QOS_TIER_UNSPECIFIED),
+                ("as usual", LATENCY_QOS_TIER_UNSPECIFIED, THROUGHPUT_QOS_TIER_UNSPECIFIED),
+            ]
+            for (name, latency, throughput) in tiers {
+                for late in name == "as usual" ? [false] : [false, true] {
+                    var firsts: [Double] = [], lasts: [Double] = [], refused: kern_return_t = KERN_SUCCESS
+                    measure(name + (late ? " from the first sound" : ""), runs: 5) { got in
+                        for t in texts {
+                            if !late, case let r = setTiers(latency, throughput), r != KERN_SUCCESS { refused = r }
+                            let t0 = Date()
+                            var first: Double?
+                            _ = sv.speak(t, voice: v, rate: rate, pitch: 1, isCancelled: { false }) {
+                                if first == nil {
+                                    first = Date().timeIntervalSince(t0)
+                                    if late, case let r = setTiers(latency, throughput), r != KERN_SUCCESS { refused = r }
+                                }
+                                got += $0.count
+                            }
+                            lasts.append(Date().timeIntervalSince(t0))
+                            _ = setTiers(LATENCY_QOS_TIER_UNSPECIFIED, THROUGHPUT_QOS_TIER_UNSPECIFIED)
+                            firsts.append(first ?? 0)
+                        }
+                    }
+                    func avg(_ a: [Double]) -> Double { a.reduce(0, +) / Double(max(a.count, 1)) * 1000 }
+                    DiagnosticLog.write(String(format: "bench   first sound after %.1f ms, all of it after %.1f ms on average (longest %.0f ms)%@",
+                                               avg(firsts), avg(lasts), (lasts.max() ?? 0) * 1000, refused != KERN_SUCCESS ? ", refused (\(refused))" : ""))
+                }
+            }
+            DiagnosticLog.write("bench: done")
+        }.start()
+    }
+
+    /// `splitBench`: a long item read whole at once, against in parts (its sentences, or its clauses), each next part
+    /// handed over only when playback is down to `BoostSynthesis.paceBelow` (small bursts with rests between, as VoiceOver's
+    /// own voice process works), with and without latency tier 3 from the first sound. Playback is taken to start with
+    /// the first sound and go on in real time; each run waits it out, so all take as long.
+    static func split() {
+        Thread {
+            let text = "今天下午三点在会议室开会，请大家准时参加，带上上周的报告和电脑。会后我们再讨论一下下个月的计划，有问题可以随时问我。"
+            func parts(_ marks: String) -> [String] {
+                var out: [String] = [], cur = ""
+                for ch in text {
+                    cur.append(ch)
+                    if marks.contains(ch) { out.append(cur); cur = "" }
+                }
+                if !cur.isEmpty { out.append(cur) }
+                return out
+            }
+            let scheme = VoiceScheme.shared().first { LanguageRuns.isChinese($0.language) } ?? VoiceScheme.defaultTingting
+            let rate = BoostSettings.shared().effectiveRateMap.rate(for: 1)
+            let sv = SystemVoice()
+            guard let v = sv.resolve(scheme.main) else { DiagnosticLog.write("bench: done"); return }
+            _ = sv.speak("好", voice: v, rate: rate, pitch: 1, isCancelled: { false }) { _ in } // loaded
+            let sr = Double(SystemVoice.sampleRate)
+            let ways: [(String, [String], Bool)] = [
+                ("whole", [text], false), ("whole, latency 3", [text], true),
+                ("by sentence", parts("。"), false), ("by clause", parts("，。"), false), ("by clause, latency 3", parts("，。"), true),
+                ("whole", [text], false), ("by clause", parts("，。"), false), ("by clause, latency 3", parts("，。"), true),
+            ]
+            for (label, list, slow) in ways {
+                var firsts: [Double] = [], worst = Double.infinity
+                measure("\(label) (\(list.count) parts)", runs: 3) { got in
+                    var made = 0
+                    var start: Date?
+                    let t0 = Date()
+                    func ahead() -> Double { start.map { Double(made) / sr - Date().timeIntervalSince($0) } ?? 0 }
+                    for (i, part) in list.enumerated() {
+                        if i > 0 {
+                            while ahead() > BoostSynthesis.paceBelow { Thread.sleep(forTimeInterval: min(max(ahead() - BoostSynthesis.paceBelow, 0.005), 0.1)) }
+                            worst = min(worst, ahead())
+                        }
+                        _ = sv.speak(part, voice: v, rate: rate, pitch: 1, isCancelled: { false }) {
+                            if start == nil && !$0.isEmpty {
+                                start = Date()
+                                firsts.append(Date().timeIntervalSince(t0))
+                                if slow { _ = setTiers(LATENCY_QOS_TIER_3, THROUGHPUT_QOS_TIER_UNSPECIFIED) }
+                            }
+                            made += $0.count
+                        }
+                    }
+                    _ = setTiers(LATENCY_QOS_TIER_UNSPECIFIED, THROUGHPUT_QOS_TIER_UNSPECIFIED)
+                    got += made
+                    if let s = start { Thread.sleep(until: s.addingTimeInterval(Double(made) / sr)) }
+                }
+                DiagnosticLog.write(String(format: "bench   first sound after %.1f ms, least in hand before a part %.0f ms",
+                                           firsts.reduce(0, +) / Double(max(firsts.count, 1)) * 1000, worst.isFinite ? worst * 1000 : -1))
+            }
+            DiagnosticLog.write("bench: done")
+        }.start()
+    }
+
+    /// This process's latency and throughput QoS tiers (`TASK_BASE_QOS_POLICY`).
+    static func setTiers(_ latency: task_latency_qos, _ throughput: task_throughput_qos) -> kern_return_t {
+        var p = task_qos_policy(task_latency_qos_tier: Int32(bitPattern: latency.rawValue), task_throughput_qos_tier: Int32(bitPattern: throughput.rawValue))
+        return withUnsafeMutablePointer(to: &p) {
+            $0.withMemoryRebound(to: integer_t.self, capacity: 2) {
+                task_policy_set(mach_task_self_, task_policy_flavor_t(TASK_BASE_QOS_POLICY), $0,
+                                mach_msg_type_number_t(MemoryLayout<task_qos_policy>.size / MemoryLayout<integer_t>.size))
+            }
+        }
+    }
+
+    /// `usage`: this process's processor time (and on the performance cores) and energy so far, into the log
+    /// (`PlayTest` asks before and after).
+    static func usage() {
+        let u = Usage()
+        DiagnosticLog.write(String(format: "bench usage: %.3f s CPU, %.3f s on P cores, %.3f J", u.cpu, u.pCPU, u.energy))
+    }
+
+    /// Runs `body` `runs` times; logs the process's processor time and energy per run, the share of that time on the
     /// performance cores, and the sound it made.
-    private static func measure(_ what: String, _ body: (inout Int) -> Void) {
-        let n = 20
+    private static func measure(_ what: String, runs n: Int = 20, _ body: (inout Int) -> Void) {
         var sound = 0
         let u0 = Usage(), t0 = Date()
         for _ in 0..<n { body(&sound) }

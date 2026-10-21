@@ -133,6 +133,9 @@ struct ContentView: View {
                 s.boost = b
                 model.save(s)
             }
+            // development: the extension synthesizes each request all at once (`-allAtOnce`) or as it is played (`-paced`)
+            if args.contains("-allAtOnce") { model.settings.allAtOnce = true; print("PACE all at once") }
+            if args.contains("-paced") { model.settings.allAtOnce = false; print("PACE in step with playback") }
             if args.contains("-clearLog") { model.clearDiagnostics { ok in print("LOG cleared: \(ok)") } }
             if args.contains("-printLog") {
                 Task {
@@ -152,8 +155,11 @@ struct ContentView: View {
             if args.contains("-mixBench") { setvbuf(stdout, nil, _IOLBF, 0); CPUTest.bench("mixBench") }
             if args.contains("-cacheBench") { setvbuf(stdout, nil, _IOLBF, 0); CPUTest.bench("cacheBench") }
             if args.contains("-placeBench") { setvbuf(stdout, nil, _IOLBF, 0); CPUTest.bench("placeBench") }
+            if args.contains("-bgBench") { setvbuf(stdout, nil, _IOLBF, 0); CPUTest.bench("bgBench") }
+            if args.contains("-splitBench") { setvbuf(stdout, nil, _IOLBF, 0); CPUTest.bench("splitBench") }
             if args.contains("-stallTest") { setvbuf(stdout, nil, _IOLBF, 0); StallTest.run() }
             if args.contains("-joinTest") { setvbuf(stdout, nil, _IOLBF, 0); JoinTest.run() }
+            if args.contains("-playTest") { setvbuf(stdout, nil, _IOLBF, 0); PlayTest.run() }
             if args.contains("-interruptTest") { setvbuf(stdout, nil, _IOLBF, 0); InterruptTest.run() }
             if args.contains("-focusTest") { setvbuf(stdout, nil, _IOLBF, 0); FocusTest.run() }
             // development: the Chinese and English voices the app sees (the voice extension sees fewer)

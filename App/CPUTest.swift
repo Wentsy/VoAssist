@@ -38,7 +38,7 @@ enum CPUTest {
         }.start()
     }
 
-    /// `-cpuBench` (`-rateBench`, `-mixBench`, `-cacheBench`, `-placeBench`): has the voice extension measure itself (`CPUBench` there)
+    /// `-cpuBench` (`-rateBench`, `-mixBench`, `-cacheBench`, `-placeBench`, `-bgBench`, `-splitBench`): has the voice extension measure itself (`CPUBench` there)
     /// and prints its "bench" lines. The log has to be on (`-logOn`).
     static func bench(_ command: String) {
         AUAudioUnit.instantiate(with: extensionComponent, options: .loadOutOfProcess) { au, _ in
@@ -47,7 +47,7 @@ enum CPUTest {
                 au.fullState = [DiagnosticLog.commandKey: "clearLog"]
                 au.fullState = [DiagnosticLog.commandKey: command]
                 var seen = 0
-                for _ in 0..<120 {
+                for _ in 0..<300 {
                     Thread.sleep(forTimeInterval: 2)
                     au.fullState = [DiagnosticLog.commandKey: "sendLog"]
                     let lines = (au.fullState?[DiagnosticLog.logKey] as? String ?? "").split(separator: "\n").filter { $0.contains("] bench") }

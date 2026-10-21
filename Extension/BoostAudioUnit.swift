@@ -177,22 +177,29 @@ final class SynthWorker {
             if firstAudio == nil && !pcm.isEmpty { firstAudio = Date() }
             ring.append(pcm, gen: gen)
         }
+        // a piece at a time as it is played (`BoostSynthesis.paceBelow`)
+        var waits = 0
+        let pace: ((TimeInterval) -> Void)? = settings.allAtOnce ? nil : { if ring.waitUntilLow(gen: gen, $0) { waits += 1 } }
         let status = plainText
             ? BoostSynthesis.runPerVoice(ssml: job.ssml, scheme: job.scheme, settings: settings, rules: RuleBook.shared(),
-                                         main: voice, other: otherVoice, cache: SoundCache.shared, isCancelled: { ring.generation != gen }, emit: out)
+                                         main: voice, other: otherVoice, cache: SoundCache.shared, pace: pace,
+                                         isCancelled: { ring.generation != gen }, emit: out)
             : BoostSynthesis.runPieces(ssml: job.ssml, scheme: job.scheme, settings: settings, rules: RuleBook.shared(),
-                                       main: voice, other: otherVoice, cache: SoundCache.shared, isCancelled: { ring.generation != gen }, emit: out)
+                                       main: voice, other: otherVoice, cache: SoundCache.shared, pace: pace,
+                                       isCancelled: { ring.generation != gen }, emit: out)
         if status != .ok && status != .cancelled {
             log.error("request failed: \(String(describing: status), privacy: .public) voice \(job.scheme.main.id, privacy: .public)")
         }
         log.debug("request done in \(Int(Date().timeIntervalSince(t0) * 1000)) ms: \(String(describing: status), privacy: .public), end: \(self.voice.lastEnd, privacy: .public)")
-        if DiagnosticLog.isOn { record(job, status: status, started: t0, firstAudio: firstAudio) }
+        if DiagnosticLog.isOn {
+            record(job, status: status, started: t0, firstAudio: firstAudio, waits: pace == nil ? nil : waits)
+        }
         ring.finish(gen: gen)
     }
 
     /// One request in the diagnostic log: the scheme and the voices it really got, VoiceOver's rate, what was read (or
     /// only its length), and how long each step took.
-    private func record(_ job: Job, status: BoostSynthesis.Status, started t0: Date, firstAudio: Date?) {
+    private func record(_ job: Job, status: BoostSynthesis.Status, started t0: Date, firstAudio: Date?, waits: Int?) {
         func ms(_ a: Date, _ b: Date) -> Int { Int(b.timeIntervalSince(a) * 1000) }
         func voices(_ e: VoiceEntry?) -> String { e.map { "\($0.id) -> \(voice.resolve($0)?.identifier ?? "none")" } ?? "none" }
         let s = job.scheme
@@ -202,7 +209,8 @@ final class SynthWorker {
         DiagnosticLog.write("request #\(job.gen) for \(job.voice)")
         DiagnosticLog.write("request #\(job.gen) \"\(s.name)\": main \(voices(s.main)), secondary \(voices(s.secondary)); VoiceOver rate \(Int((request.rate * 100).rounded()))%, boost \(s.boost), numbers \(s.numbers.rawValue), rules \(s.useRules ? "on" : "off"); \(DiagnosticLog.speech(request.segments.map(\.text).joined(separator: " ")))")
         let cache = SoundCache.shared.counts
-        let how = (plainText ? "plain text" : "SSML pieces") + ", a synthesizer per voice, sound cache \(cache.hits) hits / \(cache.misses) misses so far"
+        let how = (plainText ? "plain text" : "SSML pieces") + ", a synthesizer per voice, "
+            + (waits.map { "waited for playback \($0) times" } ?? "all at once") + ", sound cache \(cache.hits) hits / \(cache.misses) misses so far"
         DiagnosticLog.write("request #\(job.gen) \(status): waited \(ms(job.submitted, t0)) ms to start, first audio after \(firstAudio.map { "\(ms(t0, $0)) ms" } ?? "none"), done in \(ms(t0, Date())) ms, \(how)")
     }
 }
@@ -291,6 +299,9 @@ public class BoostAudioUnit: AVSpeechSynthesisProviderAudioUnit {
                 case "mixBench": CPUBench.mixed()
                 case "cacheBench": CPUBench.cached()
                 case "placeBench": CPUBench.placement()
+                case "bgBench": CPUBench.background()
+                case "splitBench": CPUBench.split()
+                case "usage": CPUBench.usage()
                 #endif
                 default: super.fullState = newValue
                 }

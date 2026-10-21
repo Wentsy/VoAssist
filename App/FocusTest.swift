@@ -6,7 +6,7 @@ import UIKit
 /// `FT_SET=long`: longer items mixing Chinese and English as in a chat list or a web page instead (to compare the power
 /// the whole device draws with another voice).
 enum FocusTest {
-    private static let longItems = [
+    static let longItems = [
         "张三，明天的 meeting 改到下午 3 点，记得带 MacBook 和 iPad，上午 10:42，2 条未读",
         "工作群（128），王五：PPT 我已经传到 Google Drive 了，大家有空 review 一下，昨天",
         "李四：这个 bug 在 iOS 27 上能复现吗？我这边 TestFlight 的 build 29 没问题",

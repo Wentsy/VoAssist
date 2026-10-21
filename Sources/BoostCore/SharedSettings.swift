@@ -102,8 +102,11 @@ public struct BoostSettings: Codable, Equatable {
     public var logUntil: Date?
     /// The log also records what VoiceOver reads (off unless asked for each time the log is switched on).
     public var logSpeech = false
+    /// Development (`-allAtOnce`): the extension synthesizes each request all at once, not in step with playback
+    /// (`BoostSynthesis.paceBelow`), to compare the power the device draws.
+    public var allAtOnce = false
 
-    enum CodingKeys: String, CodingKey { case rateMap, logUntil, logSpeech }
+    enum CodingKeys: String, CodingKey { case rateMap, logUntil, logSpeech, allAtOnce }
 
     public init() {}
 
@@ -112,6 +115,7 @@ public struct BoostSettings: Codable, Equatable {
         rateMap = try c.decodeIfPresent(RateMap.self, forKey: .rateMap)
         logUntil = try? c.decodeIfPresent(Date.self, forKey: .logUntil)
         logSpeech = (try? c.decodeIfPresent(Bool.self, forKey: .logSpeech)) ?? false
+        allAtOnce = (try? c.decodeIfPresent(Bool.self, forKey: .allAtOnce)) ?? false
     }
 
     /// Whether the diagnostic log is being recorded at `now`.

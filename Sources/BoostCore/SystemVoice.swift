@@ -501,15 +501,28 @@ public enum BoostSynthesis {
 }
 
 extension BoostSynthesis {
+    /// A request is synthesized in step with playback, piece by piece: each next piece goes to the system voice only once
+    /// playback is down to this (seconds in hand), through `pace`. Handed an utterance, the system voice makes all of it
+    /// at once, ~100 times faster than it plays, in a burst the scheduler runs at full clock, mostly on the performance
+    /// cores, and it cannot be held back meanwhile (`pauseSpeaking` does nothing while it writes). VoiceOver's own voice
+    /// process makes the sound as it plays, a little at a time, mostly on the efficiency cores. Small bursts with rests
+    /// between cost less for the same work, and what is never played (VoiceOver moved on) is never made.
+    public static let paceBelow: TimeInterval = 0.25
+    /// Before iOS 27 (`runPerVoice`) an utterance costs 50-70 ms of processor time before its first sound (a parallel
+    /// loop over ~10 threads, see `runPerVoice`) and now and then stalls; with another process synthesizing flat out on
+    /// an iPad (iPadOS 26.7), a VoiceOver item ran dry for 78 ms with `paceBelow` in hand. Twice that there.
+    public static let paceBelowPlain: TimeInterval = 0.5
+
     /// iOS 27: VoiceOver's request as the system voice reads it (`ApplePlanner`, its pauses as when VoiceOver reads that
     /// voice itself), a piece per stretch of one voice, each read whole by its voice's own synthesizer (`main`, `other`).
     /// One synthesizer switching voices inside an utterance took 3-27 ms per switch on an iPhone Air, and the player held
     /// back 300 ms of sound before starting a request with a switch ahead, lest it ran dry while the voice changed: mixed
     /// items sounded after 58-70 ms against 24-48 ms. A piece starts on an idle synthesizer with its voice loaded.
-    /// Short pieces read before come from `cache`, if given.
+    /// Short pieces read before come from `cache`, if given. `pace` waits until the player has no more than the seconds
+    /// given in hand (`paceBelow`).
     public static func runPieces(ssml: String, scheme: VoiceScheme, settings s: BoostSettings, rules: RuleBook,
                                  main mainSynth: SystemVoice, other otherSynth: SystemVoice, cache: SoundCache? = nil,
-                                 isCancelled: () -> Bool, emit: ([Float]) -> Void) -> Status {
+                                 pace: ((TimeInterval) -> Void)? = nil, isCancelled: () -> Bool, emit: ([Float]) -> Void) -> Status {
         let sr = SystemVoice.sampleRate
         let map = s.effectiveRateMap
         guard let mainVoice = mainSynth.resolve(scheme.main) else { return .noVoice }
@@ -522,10 +535,12 @@ extension BoostSynthesis {
         let otherGain = scheme.secondaryGain
         let pitch = SSML.parse(ssml).pitch
         for (i, piece) in plan.pieces.enumerated() {
-            if isCancelled() { return .cancelled }
             let other = piece.voice == .other && otherVoice != nil
             let synth = other ? otherSynth : mainSynth
             let voice = other ? otherVoice! : mainVoice
+            // a voice its synthesizer has not read yet takes ~250 ms longer to start: no waiting for that one
+            if i > 0 && synth.loadedVoices.contains(voice.identifier) { pace?(paceBelow) }
+            if isCancelled() { return .cancelled }
             func take(_ pcm: [Float]) {
                 guard !pcm.isEmpty else { return }
                 var x = pcm
@@ -569,10 +584,10 @@ extension BoostSynthesis {
     /// a request is read stretch by stretch, each language's stretches by a synthesizer of its own (`main`, `other`), as
     /// plain utterances. VoiceOver's requests there are short and simple (a name; at times a break and a second part;
     /// `<prosody volume pitch>`, a rate only away from VoiceOver's default one), so `SSML.parse` has all of it.
-    /// Short stretches read before come from `cache`, if given.
+    /// Short stretches read before come from `cache`, if given. `pace`: as in `runPieces`, with `paceBelowPlain`.
     public static func runPerVoice(ssml: String, scheme: VoiceScheme, settings s: BoostSettings, rules: RuleBook,
                                    main mainSynth: SystemVoice, other otherSynth: SystemVoice, cache: SoundCache? = nil,
-                                   isCancelled: () -> Bool, emit: ([Float]) -> Void) -> Status {
+                                   pace: ((TimeInterval) -> Void)? = nil, isCancelled: () -> Bool, emit: ([Float]) -> Void) -> Status {
         let sr = SystemVoice.sampleRate
         let map = s.effectiveRateMap
         guard let mainVoice = mainSynth.resolve(scheme.main) else { return .noVoice }
@@ -587,13 +602,19 @@ extension BoostSynthesis {
         let keepTrailing = segments.last.map { $0.explicitBreak && $0.silenceMs > 0 } ?? false
         let proc = SegmentProcessor(sampleRate: sr, stretch: scheme.boost, trimLeading: !keepLeading, trimTrailing: !keepTrailing)
         let otherGain = scheme.secondaryGain
+        var begun = false
         for seg in segments {
             let text = scheme.prepared(seg.text, rules: rules)
             if LanguageRuns.speakable(text) {
                 let runs = otherVoice == nil ? [LanguageRun(text, .main)] : LanguageRuns.split(text, mainLanguage: scheme.main.lang)
                 for (i, run) in runs.enumerated() where !run.text.isEmpty {
-                    if isCancelled() { return .cancelled }
                     let other = run.voice == .other && otherVoice != nil
+                    // as in `runPieces`: no waiting for a voice its synthesizer has not read yet
+                    if begun, let v = other ? otherVoice : mainVoice, (other ? otherSynth : mainSynth).loadedVoices.contains(v.identifier) {
+                        pace?(paceBelowPlain)
+                    }
+                    begun = true
+                    if isCancelled() { return .cancelled }
                     var words = runs.count > 1 ? LanguageRuns.lowercasingLoneCapital(run.text) : run.text
                     let reader = other ? scheme.secondary?.lang : scheme.main.lang
                     if let lang = reader, !LanguageRuns.isChinese(lang) { words = LanguageRuns.westernPunctuation(words) }

@@ -113,6 +113,21 @@ public final class AudioRing {
         }
     }
 
+    /// Waits until generation `g` has at most `seconds` of sound in hand, still to be played, or a newer request (or a
+    /// cancel) replaced it; true if it had to wait. Played on in real time, the rest takes about as long as it lasts, and
+    /// a reset ends the wait at once. Not on the main thread.
+    public func waitUntilLow(gen g: Int, _ seconds: TimeInterval) -> Bool {
+        cond.lock(); defer { cond.unlock() }
+        var waited = false
+        while gen == g {
+            let over = Double(samples.count - head) / Double(SystemVoice.sampleRate) - seconds
+            guard over > 0 else { break }
+            waited = true
+            _ = cond.wait(until: Date(timeIntervalSinceNow: min(over, 0.1)))
+        }
+        return waited
+    }
+
     /// True once the player could start (or has started already: a short request can be played to its end before the
     /// waiting side looks again), or a newer request replaced generation `g`.
     public func ready(gen g: Int) -> Bool {

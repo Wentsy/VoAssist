@@ -281,6 +281,20 @@ final class AudioRingTests: XCTestCase {
         XCTAssertEqual(b[511], 0.5)
     }
 
+    /// Pacing (`BoostSynthesis.paceBelow`): no wait with little in hand; a wait while more is, which a new request ends
+    /// at once.
+    func testWaitUntilLow() {
+        let r = AudioRing()
+        let g = r.reset()
+        r.append([Float](repeating: 0.5, count: 100 * ms), gen: g)
+        XCTAssertFalse(r.waitUntilLow(gen: g, 0.25))
+        r.append([Float](repeating: 0.5, count: 900 * ms), gen: g) // a second in hand, nothing playing
+        DispatchQueue.global().asyncAfter(deadline: .now() + 0.05) { r.reset() }
+        let t0 = Date()
+        XCTAssertTrue(r.waitUntilLow(gen: g, 0.25))
+        XCTAssertLessThan(Date().timeIntervalSince(t0), 0.09)
+    }
+
     /// The end of a request is reported once: the host's first pull for the next one must not get it again.
     func testCompleteOnce() {
         let r = AudioRing()
