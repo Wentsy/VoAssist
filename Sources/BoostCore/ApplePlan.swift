@@ -43,9 +43,9 @@ public struct ApplePiece: Equatable {
     public var speed: Double
 }
 
-/// Where a long stretch of one voice is cut as well (development, `BoostSettings.cutAt`): each part is an utterance of
-/// its own, made only when playback needs it. Smaller bursts cost less power (`-splitBench`), but each part ends as a
-/// sentence does.
+/// Where a long stretch of one voice is cut as well (`BoostSettings.cutAt`): each part is an utterance of its own, made
+/// only when playback needs it. Smaller bursts cost less power (`-splitBench`), but each part ends as a sentence does:
+/// right after a full stop, not after a comma (by ear).
 public enum PieceCut: String, Codable, CaseIterable {
     case none, sentence, clause
 }

@@ -105,9 +105,10 @@ public struct BoostSettings: Codable, Equatable {
     /// Development (`-allAtOnce`): the extension synthesizes each request all at once, not in step with playback
     /// (`BoostSynthesis.paceBelow`), to compare the power the device draws.
     public var allAtOnce = false
-    /// Development (`-cutAt`, the app's debug section): where a long stretch of one voice is also cut into utterances
-    /// of their own (`ApplePlanner.cut`), each made only as playback needs it, to hear what that does to the reading.
-    public var cutAt = PieceCut.none
+    /// Where a long stretch of one voice is also cut into utterances of their own (`ApplePlanner.cut`, iOS 27), each
+    /// made only as playback needs it: after full stops (cut after commas too, the reading sounded like sentences
+    /// ending there). `-cutAt` and the debug section of the app switch it for development.
+    public var cutAt = PieceCut.sentence
 
     enum CodingKeys: String, CodingKey { case rateMap, logUntil, logSpeech, allAtOnce, cutAt }
 
@@ -119,7 +120,7 @@ public struct BoostSettings: Codable, Equatable {
         logUntil = try? c.decodeIfPresent(Date.self, forKey: .logUntil)
         logSpeech = (try? c.decodeIfPresent(Bool.self, forKey: .logSpeech)) ?? false
         allAtOnce = (try? c.decodeIfPresent(Bool.self, forKey: .allAtOnce)) ?? false
-        cutAt = (try? c.decodeIfPresent(PieceCut.self, forKey: .cutAt)) ?? .none
+        cutAt = (try? c.decodeIfPresent(PieceCut.self, forKey: .cutAt)) ?? .sentence
     }
 
     /// Whether the diagnostic log is being recorded at `now`.

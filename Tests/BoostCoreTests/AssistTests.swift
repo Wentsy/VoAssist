@@ -560,6 +560,9 @@ final class DiagnosticLogTests: XCTestCase {
         XCTAssertNil(s.logUntil)
         XCTAssertFalse(s.logSpeech)
         XCTAssertFalse(s.isLogging())
+        // settings from before the cuts after punctuation get them
+        XCTAssertEqual(s.cutAt, .sentence)
+        XCTAssertFalse(s.allAtOnce)
     }
 }
 
