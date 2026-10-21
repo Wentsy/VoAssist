@@ -102,6 +102,11 @@ struct ContentView: View {
                 #if DEBUG
                 Section("调试") {
                     Button("测量旁白语速") { nativeProbe.measure { debugLine = $0 } }
+                    Picker("长句切开合成", selection: $model.settings.cutAt) {
+                        Text("不切").tag(PieceCut.none)
+                        Text("句号处").tag(PieceCut.sentence)
+                        Text("句号和逗号处").tag(PieceCut.clause)
+                    }
                     if !debugLine.isEmpty { Text(debugLine).font(.footnote) }
                 }
                 #endif
@@ -136,6 +141,11 @@ struct ContentView: View {
             // development: the extension synthesizes each request all at once (`-allAtOnce`) or as it is played (`-paced`)
             if args.contains("-allAtOnce") { model.settings.allAtOnce = true; print("PACE all at once") }
             if args.contains("-paced") { model.settings.allAtOnce = false; print("PACE in step with playback") }
+            // development: `-cutAt none|sentence|clause`, where long stretches of one voice are cut as well
+            if let i = args.firstIndex(of: "-cutAt"), i + 1 < args.count, let c = PieceCut(rawValue: args[i + 1]) {
+                model.settings.cutAt = c
+                print("CUT at \(c)")
+            }
             if args.contains("-clearLog") { model.clearDiagnostics { ok in print("LOG cleared: \(ok)") } }
             if args.contains("-printLog") {
                 Task {

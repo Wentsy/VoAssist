@@ -271,6 +271,36 @@ final class ApplePlanTests: XCTestCase {
         XCTAssertEqual(joined.switchCapMs, [0, 0])
     }
 
+    func testCutAfterPunctuation() {
+        XCTAssertEqual(ApplePlanner.cut("今天天气很好。我们去公园，好吗？", at: .none), ["今天天气很好。我们去公园，好吗？"])
+        XCTAssertEqual(ApplePlanner.cut("今天天气很好。我们去公园，好吗？", at: .sentence), ["今天天气很好。", "我们去公园，好吗？"])
+        // a part too short to stand alone stays with what follows; nothing is cut off at the end
+        XCTAssertEqual(ApplePlanner.cut("今天天气很好。我们去公园，好吗？", at: .clause), ["今天天气很好。", "我们去公园，", "好吗？"])
+        XCTAssertEqual(ApplePlanner.cut("好的，我们走吧。", at: .clause), ["好的，我们走吧。"])
+        // closing quotes go with their part; the 、 of a list is no cut
+        XCTAssertEqual(ApplePlanner.cut("他说：“我来了。”然后坐下", at: .sentence), ["他说：“我来了。”", "然后坐下"])
+        XCTAssertEqual(ApplePlanner.cut("苹果、香蕉、橘子都有", at: .clause), ["苹果、香蕉、橘子都有"])
+        // a Western mark only before white space
+        XCTAssertEqual(ApplePlanner.cut("Version 3.5 of Node.js is out. Get it, now", at: .clause),
+                       ["Version 3.5 of Node.js is out. ", "Get it, ", "now"])
+    }
+
+    func testPiecesCutAfterPunctuationPauseAsTheMarkAsks() {
+        let ssml = #"<speak><prosody rate="200%">打开设置页面，再找到 Safari 浏览器窗口。然后轻点两下</prosody></speak>"#
+        let whole = ApplePlanner.plan(ssml, scheme: tt, rules: RuleBook([]), map: map)
+        XCTAssertEqual(whole.pieces.map(\.text), ["打开设置页面，再找到 ", "Safari ", "浏览器窗口。然后轻点两下"])
+        XCTAssertEqual(whole.pieceCapMs, whole.switchCapMs)
+        let cut = ApplePlanner.plan(ssml, scheme: tt, rules: RuleBook([]), map: map, cutAt: .clause)
+        XCTAssertEqual(cut.ssml, whole.ssml)
+        XCTAssertEqual(cut.segments, whole.segments)
+        XCTAssertEqual(cut.pieces.map(\.text), ["打开设置页面，", "再找到 ", "Safari ", "浏览器窗口。", "然后轻点两下"])
+        XCTAssertEqual(cut.pieces.map(\.voice), [.main, .main, .other, .main, .main])
+        // the clause and sentence marks' pauses at half the time at twice the speed, the switches as before
+        XCTAssertEqual(cut.pieceCapMs, [150, 0, 0, 120])
+        // each piece a whole SSML of its own
+        XCTAssertEqual(cut.pieces[1].ssml, #"<speak><prosody rate="200%">再找到 </prosody></speak>"#)
+    }
+
     func testLoneCapitalIsReadAsTheLetter() {
         let sam = #"<voice name="com.apple.voice.super-compact.en-US.Samantha">"#
         // left alone by the split: lower-cased, so not "capital C"

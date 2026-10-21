@@ -530,7 +530,7 @@ extension BoostSynthesis {
         var scheme = scheme
         if let o = scheme.secondary { scheme.secondary = otherSynth.resolve(o).map { VoiceEntry(id: $0.identifier, name: o.name, lang: o.lang) } }
         let otherVoice = scheme.secondary.flatMap { otherSynth.resolve($0) }
-        let plan = ApplePlanner.plan(ssml, scheme: scheme, rules: rules, map: map)
+        let plan = ApplePlanner.plan(ssml, scheme: scheme, rules: rules, map: map, cutAt: s.cutAt)
         let proc = SegmentProcessor(sampleRate: sr, stretch: scheme.boost, trimLeading: !plan.keepLeading, trimTrailing: !plan.keepTrailing)
         let otherGain = scheme.secondaryGain
         let pitch = SSML.parse(ssml).pitch
@@ -568,7 +568,7 @@ extension BoostSynthesis {
                 case .done, .rejected: if read == .done, let k = key { cache?.keep(k, heard) }
                 }
             }
-            if i < plan.pieces.count - 1, i < plan.switchCapMs.count { emit(proc.endStretch(capMs: plan.switchCapMs[i])) }
+            if i < plan.pieceCapMs.count { emit(proc.endStretch(capMs: plan.pieceCapMs[i])) }
         }
         emit(proc.finish())
         // two requests played back to back apart a little, as in `run`
@@ -584,7 +584,9 @@ extension BoostSynthesis {
     /// a request is read stretch by stretch, each language's stretches by a synthesizer of its own (`main`, `other`), as
     /// plain utterances. VoiceOver's requests there are short and simple (a name; at times a break and a second part;
     /// `<prosody volume pitch>`, a rate only away from VoiceOver's default one), so `SSML.parse` has all of it.
-    /// Short stretches read before come from `cache`, if given. `pace`: as in `runPieces`, with `paceBelowPlain`.
+    /// Short stretches read before come from `cache`, if given. `pace`: as in `runPieces`, with `paceBelowPlain`. Not cut
+    /// after punctuation (`BoostSettings.cutAt`): at 50-70 ms per utterance, 3 of 8 long items ran dry for up to 30 ms
+    /// with clause cuts on an iPad (iPadOS 26.7), none without.
     public static func runPerVoice(ssml: String, scheme: VoiceScheme, settings s: BoostSettings, rules: RuleBook,
                                    main mainSynth: SystemVoice, other otherSynth: SystemVoice, cache: SoundCache? = nil,
                                    pace: ((TimeInterval) -> Void)? = nil, isCancelled: () -> Bool, emit: ([Float]) -> Void) -> Status {

@@ -12,9 +12,12 @@ import Foundation
 public struct ApplePlan: Equatable {
     /// For `AVSpeechUtterance(ssmlRepresentation:)`.
     public var ssml: String
-    /// The request cut where the voices switch: each piece a whole SSML of its own for its voice alone (no `<voice>`),
-    /// the elements still open at a cut closed at its end and opened again at the start of the next.
+    /// The request cut where the voices switch (and, with `PieceCut`, after punctuation): each piece a whole SSML of
+    /// its own for its voice alone (no `<voice>`), the elements still open at a cut closed at its end and opened again
+    /// at the start of the next.
     public var pieces: [ApplePiece]
+    /// The pause where piece i ends and i+1 begins, as `switchCapMs` (a cut after punctuation: that mark's pause).
+    public var pieceCapMs: [Int?]
     /// The voices in the order the system voice reads them. It ends every stretch of one voice with an empty buffer
     /// (breaks and sentences do not), so the n-th stretch of audio belongs to `segments[n]`.
     public var segments: [RunVoice]
@@ -40,6 +43,13 @@ public struct ApplePiece: Equatable {
     public var speed: Double
 }
 
+/// Where a long stretch of one voice is cut as well (development, `BoostSettings.cutAt`): each part is an utterance of
+/// its own, made only when playback needs it. Smaller bursts cost less power (`-splitBench`), but each part ends as a
+/// sentence does.
+public enum PieceCut: String, Codable, CaseIterable {
+    case none, sentence, clause
+}
+
 public enum ApplePlanner {
     /// The pause where the voices switch without punctuation between them, in ms at the normal speed (shorter as the
     /// voice speaks faster, like the voice's own pauses), on top of the voices' own soft ends, which stay. 0 by ear:
@@ -55,6 +65,44 @@ public enum ApplePlanner {
     static let clauseMarks: Set<Character> = ["，", "、", "；", "：", ",", ";", ":"]
     static let sentenceMarks: Set<Character> = ["。", "！", "？", "…", ".", "!", "?"]
 
+    /// The least a part cut off (`cut`) has to say, in letters and digits; shorter ones stay with what follows.
+    static let minCutLength = 4
+    /// Closing quotes and brackets: after a mark they stay with the part it ends.
+    static let closers: Set<Character> = ["”", "’", "」", "』", "）", "》", "】", ")", "]", "\"", "'"]
+
+    /// `text` cut after its sentence marks (`.clause`: its clause marks too, bar the 、 of a list), each part keeping its
+    /// marks and the closing quotes and brackets after them. A Western mark only before white space ("3.5", "1,000" and
+    /// "Node.js" stay whole). The parts joined give `text` back.
+    public static func cut(_ text: String, at marks: PieceCut) -> [String] {
+        guard marks != .none else { return [text] }
+        let chars = Array(text)
+        func isMark(_ c: Character) -> Bool {
+            sentenceMarks.contains(c) || (marks == .clause && clauseMarks.contains(c) && c != "、")
+        }
+        var parts: [String] = []
+        var start = 0, said = 0
+        var i = 0
+        while i < chars.count {
+            let c = chars[i]
+            if c.isLetter || c.isNumber { said += 1 }
+            i += 1
+            guard isMark(c) else { continue }
+            var end = i
+            while end < chars.count, isMark(chars[end]) || closers.contains(chars[end]) { end += 1 }
+            if c.isASCII {
+                guard end < chars.count, chars[end].isWhitespace else { continue }
+            }
+            while end < chars.count, chars[end].isWhitespace { end += 1 }
+            i = end
+            guard said >= minCutLength, chars[end...].contains(where: { $0.isLetter || $0.isNumber }) else { continue }
+            parts.append(String(chars[start..<end]))
+            start = end
+            said = 0
+        }
+        if start < chars.count || parts.isEmpty { parts.append(String(chars[start...])) }
+        return parts
+    }
+
     /// The pause (ms) where the voices switch after `text`, read at `speed` (shorter as the voice speaks faster, like
     /// its own pauses): a punctuation mark's (`clausePauseMs`, `sentencePauseMs`), else `switchPauseMs`. A stretch that
     /// is only a symbol read out (the dot of "Node.js") is no full stop.
@@ -66,8 +114,13 @@ public enum ApplePlanner {
         return Int((Double(ms) / max(speed, 0.1)).rounded())
     }
 
-    /// `ssml` is VoiceOver's request (or our own for a preview).
-    public static func plan(_ ssml: String, scheme: VoiceScheme, rules: RuleBook, map: RateMap) -> ApplePlan {
+    /// The pause (ms) at a cut after `part` (`cut`), read at `speed`: its mark's, as where the voices switch.
+    static func cutPause(after part: String, speed: Double) -> Int {
+        switchPause(after: String(part.reversed().drop { closers.contains($0) || $0.isWhitespace }.reversed()), speed: speed)
+    }
+
+    /// `ssml` is VoiceOver's request (or our own for a preview). `cutAt`: where else the pieces are cut.
+    public static func plan(_ ssml: String, scheme: VoiceScheme, rules: RuleBook, map: RateMap, cutAt: PieceCut = .none) -> ApplePlan {
         let ns = ssml as NSString
         let re = try! NSRegularExpression(pattern: "<[^>]*>|[^<]+")
         var out = ""
@@ -92,6 +145,7 @@ public enum ApplePlanner {
         var bodyText = ""
         var bodySpeed = 1.0
         var open: [(name: Substring, tag: String)] = []
+        var cutAfter = Set<Int>() // the pieces that end at a cut after punctuation, not where the voices switch
         func emit(_ t: String) { out += t; body += t }
         func emitTag(_ t: String, name: Substring, lower: String) {
             emit(t)
@@ -101,8 +155,9 @@ public enum ApplePlanner {
                 open.append((name, t))
             }
         }
-        func closePiece() {
+        func closePiece(atCut: Bool = false) {
             guard let v = bodyVoice else { return }
+            if atCut { cutAfter.insert(pieces.count) }
             pieces.append(ApplePiece(voice: v, ssml: body + open.reversed().map { "</\($0.name)>" }.joined(), text: bodyText, speed: bodySpeed))
             body = open.map(\.tag).joined()
             bodyText = ""
@@ -168,26 +223,31 @@ public enum ApplePlanner {
                 if let lang = reader, !LanguageRuns.isChinese(lang) { text = LanguageRuns.westernPunctuation(text) }
                 runs.append((p.voice, text, pauseAhead && !runs.isEmpty))
                 pauseAhead = false
-                if bodyVoice != p.voice {
-                    closePiece()
-                    bodyVoice = p.voice
-                    bodySpeed = currentSpeed()
-                }
-                bodyText += text
+                // nested rates are absolute for the system voice (measured): the main speed times the relative one
+                let rel = scheme.secondaryRate
+                let otherSpeed = p.voice == .other && secondaryID != nil && abs(rel - 1) > 0.001 ? min(currentSpeed() * rel, map.maxMultiplier) : nil
                 if p.voice == .other, let id = secondaryID {
-                    let rel = scheme.secondaryRate
-                    if abs(rel - 1) > 0.001 {
-                        // nested rates are absolute for the system voice (measured): the main speed times the relative one
-                        let s = min(currentSpeed() * rel, map.maxMultiplier)
-                        if bodyText == text { bodySpeed = s }
-                        out += "<voice name=\"\(id)\"><prosody rate=\"\(percent(s))\">\(encode(text))</prosody></voice>"
-                        body += "<prosody rate=\"\(percent(s))\">\(encode(text))</prosody>"
-                    } else {
-                        out += "<voice name=\"\(id)\">\(encode(text))</voice>"
-                        body += encode(text)
-                    }
+                    out += otherSpeed.map { "<voice name=\"\(id)\"><prosody rate=\"\(percent($0))\">\(encode(text))</prosody></voice>" }
+                        ?? "<voice name=\"\(id)\">\(encode(text))</voice>"
                 } else {
-                    emit(encode(text))
+                    out += encode(text)
+                }
+                for (k, part) in cut(text, at: cutAt).enumerated() {
+                    if bodyVoice != p.voice {
+                        closePiece()
+                        bodyVoice = p.voice
+                        bodySpeed = currentSpeed()
+                    } else if k > 0 {
+                        closePiece(atCut: true)
+                        bodySpeed = currentSpeed()
+                    }
+                    bodyText += part
+                    if let s = otherSpeed {
+                        if bodyText == part { bodySpeed = s }
+                        body += "<prosody rate=\"\(percent(s))\">\(encode(part))</prosody>"
+                    } else {
+                        body += encode(part)
+                    }
                 }
             }
         }
@@ -208,8 +268,18 @@ public enum ApplePlanner {
             // VoiceOver's own pause (a break, a new sentence) where the voices switch: kept as the system voice makes it
             segs[i + 1].pauseBefore ? nil : switchPause(after: segs[i].text, speed: mainSpeed)
         }
+        var pieceCaps: [Int?] = []
+        var switchAt = 0
+        for i in pieces.indices.dropLast() {
+            if cutAfter.contains(i) {
+                pieceCaps.append(cutPause(after: pieces[i].text, speed: mainSpeed))
+            } else {
+                pieceCaps.append(switchAt < caps.count ? caps[switchAt] : nil)
+                switchAt += 1
+            }
+        }
         let hasText = runs.contains { $0.text.contains { $0.isLetter || $0.isNumber } }
-        return ApplePlan(ssml: out, pieces: pieces, segments: segs.map(\.voice), switchCapMs: caps,
+        return ApplePlan(ssml: out, pieces: pieces, pieceCapMs: pieceCaps, segments: segs.map(\.voice), switchCapMs: caps,
                          keepLeading: meaningful.first ?? false, keepTrailing: meaningful.last ?? false,
                          hasText: hasText, speed: mainSpeed)
     }
