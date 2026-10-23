@@ -113,8 +113,14 @@ public struct VoiceScheme: Codable, Identifiable, Equatable, Hashable {
     /// The default scheme has a fixed id, so the one the extension offers before the app first ran is the same voice
     /// VoiceOver keeps once the app has written its list. (Builds before 15 also had Samantha ...002 and 善怡 ...003;
     /// those ids stay unused.)
-    public static let defaultTingting = VoiceScheme(id: UUID(uuidString: "5A1C0000-0000-4000-8000-000000000001")!, name: "婷婷+Samantha",
-                                                    main: .tingting, secondary: .samantha)
+    /// This fork is signed without the App Group, so the app cannot save schemes: the one the user has is this default,
+    /// compiled in. Its boost is what the user asked for (1.25×).
+    public static let defaultTingting: VoiceScheme = {
+        var s = VoiceScheme(id: UUID(uuidString: "5A1C0000-0000-4000-8000-000000000001")!, name: "婷婷+Samantha",
+                            main: .tingting, secondary: .samantha)
+        s.boost = 1.25
+        return s
+    }()
     public static let defaults = [defaultTingting]
 
     // MARK: shared file
