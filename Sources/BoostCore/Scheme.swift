@@ -118,7 +118,8 @@ public struct VoiceScheme: Codable, Identifiable, Equatable, Hashable {
     public static let defaultTingting: VoiceScheme = {
         var s = VoiceScheme(id: UUID(uuidString: "5A1C0000-0000-4000-8000-000000000001")!, name: "婷婷+Samantha",
                             main: .tingting, secondary: .samantha)
-        s.boost = 1.25
+        s.boost = 1.1
+        s.secondaryRate = 0.9
         return s
     }()
     public static let defaults = [defaultTingting]
